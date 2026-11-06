@@ -1,6 +1,7 @@
 use adw::prelude::*;
 use gtk4::gio;
 use gtk4::glib;
+use gtk4::pango;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -129,26 +130,26 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     root_box.append(&search_bar);
 
     // --- 3. Рабочая область: Редактор текста ---
+    // Создаем TextTagTable и тег "editor-font", который будет управлять гарнитурой и размером шрифта
+    let tag_table = gtk4::TextTagTable::new();
+    let editor_font_tag = gtk4::TextTag::builder()
+        .name("editor-font")
+        .build();
+    tag_table.add(&editor_font_tag);
+
+    // Создаем TextBuffer с предварительно настроенной таблицей тегов
+    let buffer = gtk4::TextBuffer::builder()
+        .tag_table(&tag_table)
+        .build();
+
     let text_view = gtk4::TextView::builder()
+        .buffer(&buffer)
         .wrap_mode(gtk4::WrapMode::Word)
         .left_margin(18)
         .right_margin(18)
         .top_margin(14)
         .bottom_margin(14)
         .build();
-
-    // Задаем уникальный CSS-класс для изолированной стилизации шрифта редактора
-    text_view.add_css_class("editor-view");
-
-    // Создаем выделенный CssProvider для динамического применения настроек шрифта редактора
-    let editor_css_provider = gtk4::CssProvider::new();
-    if let Some(display) = gtk4::gdk::Display::default() {
-        gtk4::style_context_add_provider_for_display(
-            &display,
-            &editor_css_provider,
-            gtk4::STYLE_PROVIDER_PRIORITY_USER,
-        );
-    }
 
     let editor_scroll = gtk4::ScrolledWindow::builder()
         .child(&text_view)
@@ -170,28 +171,39 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     root_box.append(&view_stack);
     window.set_content(Some(&root_box));
 
-    // Применяем семейство и размер шрифта редактора из сохраненных настроек
+    // Применяем семейство и размер шрифта редактора через TextTag и TextBuffer
     apply_editor_font(
-        &editor_css_provider,
+        &buffer,
+        &editor_font_tag,
         &app_state.settings.borrow().editor_font_family,
         app_state.settings.borrow().editor_font_size,
     );
 
     // Если был передан файл при запуске — загружаем его содержимое
-    let buffer = text_view.buffer();
     if let Some(ref path) = initial_file {
         if let Ok(content) = std::fs::read_to_string(path) {
             buffer.set_text(&content);
+            apply_editor_font(
+                &buffer,
+                &editor_font_tag,
+                &app_state.settings.borrow().editor_font_family,
+                app_state.settings.borrow().editor_font_size,
+            );
             *app_state.is_modified.borrow_mut() = false;
         }
     }
     update_window_title(&window, &app_state);
 
     // Отслеживаем изменения в буфере текста, чтобы ставить индикатор `*` в заголовке
+    // и поддерживать применение тега шрифта ко всему вводимому тексту
     let state_clone = app_state.clone();
     let window_weak = window.downgrade();
-    buffer.connect_changed(move |_| {
+    let font_tag_for_buffer = editor_font_tag.clone();
+    buffer.connect_changed(move |buf| {
         *state_clone.is_modified.borrow_mut() = true;
+        let start = buf.start_iter();
+        let end = buf.end_iter();
+        buf.apply_tag(&font_tag_for_buffer, &start, &end);
         if let Some(win) = window_weak.upgrade() {
             update_window_title(&win, &state_clone);
         }
@@ -257,7 +269,6 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     let do_save = Rc::new(move |force_save_as: bool| {
         let current_path = save_action_state.current_file.borrow().clone();
         if let (false, Some(path)) = (force_save_as, current_path) {
-            // Если путь уже известен и это не "Сохранить как..." — пишем сразу в файл
             let start = save_action_buffer.start_iter();
             let end = save_action_buffer.end_iter();
             let text = save_action_buffer.text(&start, &end, false);
@@ -266,7 +277,6 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
                 update_window_title(&save_action_window, &save_action_state);
             }
         } else {
-            // Иначе запрашиваем путь через диалог сохранения
             let file_dialog = gtk4::FileDialog::builder()
                 .title("Сохранить Markdown файл")
                 .initial_name("document.md")
@@ -310,12 +320,12 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     let buffer_for_open = buffer.clone();
     let state_for_open = app_state.clone();
     let do_save_for_open = do_save.clone();
+    let font_tag_for_open = editor_font_tag.clone();
     let trigger_file_open = Rc::new(move || {
         let file_dialog = gtk4::FileDialog::builder()
             .title("Открыть Markdown файл")
             .build();
 
-        // Настраиваем фильтр расширений файлов
         let filter = gtk4::FileFilter::new();
         filter.set_name(Some("Markdown (*.md, *.markdown, *.rmd)"));
         filter.add_pattern("*.md");
@@ -328,13 +338,16 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
         let buffer = buffer_for_open.clone();
         let state = state_for_open.clone();
         let win = window_for_open.clone();
+        let tag = font_tag_for_open.clone();
 
-        // Асинхронный вызов системного диалога открытия файла
         file_dialog.open(Some(&window_for_open), gio::Cancellable::NONE, move |res| {
             if let Ok(file) = res {
                 if let Some(path) = file.path() {
                     if let Ok(content) = std::fs::read_to_string(&path) {
                         buffer.set_text(&content);
+                        let family = state.settings.borrow().editor_font_family.clone();
+                        let size = state.settings.borrow().editor_font_size;
+                        apply_editor_font(&buffer, &tag, &family, size);
                         *state.current_file.borrow_mut() = Some(path);
                         *state.is_modified.borrow_mut() = false;
                         update_window_title(&win, &state);
@@ -473,12 +486,13 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
 
     // Действие win.preferences
     let window_for_pref = window.clone();
-    let css_provider_for_pref = editor_css_provider.clone();
+    let buffer_for_pref = buffer.clone();
+    let tag_for_pref = editor_font_tag.clone();
     let state_for_pref = app_state.clone();
     let refresh_pref = refresh_preview.clone();
     let pref_action = gio::SimpleAction::new("preferences", None);
     pref_action.connect_activate(move |_, _| {
-        show_preferences_dialog(&window_for_pref, &state_for_pref, &css_provider_for_pref, refresh_pref.clone());
+        show_preferences_dialog(&window_for_pref, &state_for_pref, &buffer_for_pref, &tag_for_pref, refresh_pref.clone());
     });
     actions.add_action(&pref_action);
 
@@ -579,15 +593,20 @@ fn apply_color_scheme(theme: &str) {
     }
 }
 
-/// Динамически изменяет семейство и размер шрифта в `GtkTextView` через `CssProvider`.
+/// Применяет гарнитуру и размер шрифта к текстовому буферу редактора через Pango Font Description.
 ///
-/// Обрати внимание: мы стилизуем `.editor-view text` и задаем `!important`,
-/// чтобы переопределить встроенные стили темы Adwaita для текстового поля.
-fn apply_editor_font(provider: &gtk4::CssProvider, font_family: &str, font_size: u32) {
-    let css = format!(
-        ".editor-view, .editor-view text {{ font-family: \"{font_family}\", monospace !important; font-size: {font_size}pt !important; }}"
-    );
-    provider.load_from_data(&css);
+/// Это нативный и 100% надежный механизм в GTK: вместо CSS, который может конфликтовать со стилями
+/// темы Adwaita, мы задаем шрифт на уровне GtkTextTag, который Pango гарантированно отображает.
+fn apply_editor_font(buffer: &gtk4::TextBuffer, tag: &gtk4::TextTag, font_family: &str, font_size: u32) {
+    let mut desc = pango::FontDescription::new();
+    desc.set_family(font_family);
+    desc.set_size((font_size as i32) * pango::SCALE);
+
+    tag.set_font_desc(Some(&desc));
+
+    let start = buffer.start_iter();
+    let end = buffer.end_iter();
+    buffer.apply_tag(tag, &start, &end);
 }
 
 /// Настраивает механизм поиска по текстовому буферу `GtkTextBuffer`.
@@ -637,7 +656,8 @@ fn setup_search(entry: &gtk4::SearchEntry, text_view: &gtk4::TextView) {
 fn show_preferences_dialog(
     parent: &adw::ApplicationWindow,
     state: &AppState,
-    editor_css_provider: &gtk4::CssProvider,
+    editor_buffer: &gtk4::TextBuffer,
+    editor_font_tag: &gtk4::TextTag,
     refresh_preview: Rc<dyn Fn()>,
 ) {
     let window = adw::PreferencesWindow::builder()
@@ -694,7 +714,7 @@ fn show_preferences_dialog(
         .description("Настройка гарнитуры и размера текста")
         .build();
 
-    // Список популярных моноширинных и системных шрифтов
+    // Список популярных моноширинных и пропорциональных шрифтов в Linux
     let font_options = [
         "Monospace",
         "JetBrains Mono",
@@ -721,14 +741,15 @@ fn show_preferences_dialog(
     font_family_row.set_selected(initial_font_idx as u32);
 
     let state_font_family = state.clone();
-    let provider_font_family = editor_css_provider.clone();
+    let buffer_for_font_family = editor_buffer.clone();
+    let tag_for_font_family = editor_font_tag.clone();
     font_family_row.connect_selected_notify(move |row| {
         let idx = row.selected() as usize;
         if let Some(&selected_font) = font_options.get(idx) {
             state_font_family.settings.borrow_mut().editor_font_family = selected_font.to_string();
             state_font_family.settings.borrow().save();
             let size = state_font_family.settings.borrow().editor_font_size;
-            apply_editor_font(&provider_font_family, selected_font, size);
+            apply_editor_font(&buffer_for_font_family, &tag_for_font_family, selected_font, size);
         }
     });
     fonts_group.add(&font_family_row);
@@ -747,13 +768,14 @@ fn show_preferences_dialog(
         .build();
 
     let state_editor_font = state.clone();
-    let provider_editor_font = editor_css_provider.clone();
+    let buffer_for_spin = editor_buffer.clone();
+    let tag_for_spin = editor_font_tag.clone();
     editor_spin.connect_changed(move |row| {
         let size = row.value() as u32;
         state_editor_font.settings.borrow_mut().editor_font_size = size;
         state_editor_font.settings.borrow().save();
         let family = state_editor_font.settings.borrow().editor_font_family.clone();
-        apply_editor_font(&provider_editor_font, &family, size);
+        apply_editor_font(&buffer_for_spin, &tag_for_spin, &family, size);
     });
     fonts_group.add(&editor_spin);
 
