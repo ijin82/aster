@@ -80,16 +80,18 @@ pub fn render_markdown_to_html(markdown_input: &str, is_dark: bool, font_size_px
 
         body {{
             box-sizing: border-box;
-            min-width: 200px;
-            max-width: 980px;
+            width: 90%;
+            max-width: 90%;
             margin: 0 auto;
-            padding: 35px 45px;
+            padding: 35px 20px;
             font-size: {font_size_px}px;
         }}
 
         @media (max-width: 767px) {{
             body {{
-                padding: 15px;
+                width: 95%;
+                max-width: 95%;
+                padding: 15px 10px;
             }}
         }}
 
