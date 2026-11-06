@@ -1,5 +1,6 @@
 use adw::prelude::*;
 use gtk4::gio;
+use gtk4::glib;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -106,6 +107,7 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     menu.append(Some("Сохранить как..."), Some("win.save_as"));
     menu.append(Some("Настройки"), Some("win.preferences"));
     menu.append(Some("О программе"), Some("win.about"));
+    menu.append(Some("Закрыть окно"), Some("win.close"));
     menu_btn.set_menu_model(Some(&menu));
     header_bar.pack_end(&menu_btn);
 
@@ -232,44 +234,6 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
         }
     });
 
-    // --- Обработчик открытия файла (GtkFileDialog) ---
-    let window_for_open = window.clone();
-    let buffer_for_open = buffer.clone();
-    let state_for_open = app_state.clone();
-    open_btn.connect_clicked(move |_| {
-        let file_dialog = gtk4::FileDialog::builder()
-            .title("Открыть Markdown файл")
-            .build();
-
-        // Настраиваем фильтр расширений файлов
-        let filter = gtk4::FileFilter::new();
-        filter.set_name(Some("Markdown (*.md, *.markdown, *.rmd)"));
-        filter.add_pattern("*.md");
-        filter.add_pattern("*.markdown");
-        filter.add_pattern("*.rmd");
-        let filters = gio::ListStore::new::<gtk4::FileFilter>();
-        filters.append(&filter);
-        file_dialog.set_filters(Some(&filters));
-
-        let buffer = buffer_for_open.clone();
-        let state = state_for_open.clone();
-        let win = window_for_open.clone();
-
-        // Асинхронный вызов системного диалога открытия файла
-        file_dialog.open(Some(&window_for_open), gio::Cancellable::NONE, move |res| {
-            if let Ok(file) = res {
-                if let Some(path) = file.path() {
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        buffer.set_text(&content);
-                        *state.current_file.borrow_mut() = Some(path);
-                        *state.is_modified.borrow_mut() = false;
-                        update_window_title(&win, &state);
-                    }
-                }
-            }
-        });
-    });
-
     // --- Обработчик сохранения файла (Save / Save As) ---
     let save_action_state = app_state.clone();
     let save_action_window = window.clone();
@@ -325,6 +289,121 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
         do_save_btn(false);
     });
 
+    // --- Обработчик открытия файла (с проверкой несохраненных изменений) ---
+    let window_for_open = window.clone();
+    let buffer_for_open = buffer.clone();
+    let state_for_open = app_state.clone();
+    let do_save_for_open = do_save.clone();
+    let trigger_file_open = Rc::new(move || {
+        let file_dialog = gtk4::FileDialog::builder()
+            .title("Открыть Markdown файл")
+            .build();
+
+        // Настраиваем фильтр расширений файлов
+        let filter = gtk4::FileFilter::new();
+        filter.set_name(Some("Markdown (*.md, *.markdown, *.rmd)"));
+        filter.add_pattern("*.md");
+        filter.add_pattern("*.markdown");
+        filter.add_pattern("*.rmd");
+        let filters = gio::ListStore::new::<gtk4::FileFilter>();
+        filters.append(&filter);
+        file_dialog.set_filters(Some(&filters));
+
+        let buffer = buffer_for_open.clone();
+        let state = state_for_open.clone();
+        let win = window_for_open.clone();
+
+        // Асинхронный вызов системного диалога открытия файла
+        file_dialog.open(Some(&window_for_open), gio::Cancellable::NONE, move |res| {
+            if let Ok(file) = res {
+                if let Some(path) = file.path() {
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        buffer.set_text(&content);
+                        *state.current_file.borrow_mut() = Some(path);
+                        *state.is_modified.borrow_mut() = false;
+                        update_window_title(&win, &state);
+                    }
+                }
+            }
+        });
+    });
+
+    let window_for_open_check = window.clone();
+    let state_for_open_check = app_state.clone();
+    let do_open_dialog = Rc::new(move || {
+        let is_mod = *state_for_open_check.is_modified.borrow();
+        if is_mod {
+            let trigger_open_discard = trigger_file_open.clone();
+            let trigger_open_save = trigger_file_open.clone();
+            let do_save = do_save_for_open.clone();
+            show_unsaved_changes_dialog(
+                &window_for_open_check,
+                "Открыть другой файл?",
+                "В текущем файле есть несохраненные изменения. Открытие нового файла приведет к их потере.",
+                move || {
+                    // Пользователь выбрал отбросить изменения и открыть файл
+                    trigger_open_discard();
+                },
+                move || {
+                    // Пользователь сохранил изменения перед открытием
+                    do_save(false);
+                    trigger_open_save();
+                },
+            );
+        } else {
+            trigger_file_open();
+        }
+    });
+
+    let do_open_btn = do_open_dialog.clone();
+    open_btn.connect_clicked(move |_| {
+        do_open_btn();
+    });
+
+    // --- Обработчик закрытия окна (с предупреждением о несохраненных правках) ---
+    // Перехватываем сигнал 'close-request' окна: возвращение glib::Propagation::Stop
+    // отменяет закрытие окна, пока пользователь не подтвердит действие в диалоге.
+    let state_for_close = app_state.clone();
+    let do_save_for_close = do_save.clone();
+    let is_force_closing = Rc::new(RefCell::new(false));
+
+    let force_closing_clone = is_force_closing.clone();
+    window.connect_close_request(move |win| {
+        if *force_closing_clone.borrow() {
+            return glib::Propagation::Proceed;
+        }
+
+        let is_mod = *state_for_close.is_modified.borrow();
+        if is_mod {
+            let win_for_discard = win.clone();
+            let win_for_save = win.clone();
+            let flag_discard = force_closing_clone.clone();
+            let flag_save = force_closing_clone.clone();
+            let do_save = do_save_for_close.clone();
+
+            show_unsaved_changes_dialog(
+                win,
+                "Закрыть без сохранения?",
+                "В документе есть несохраненные изменения. Закрытие приведет к их потере.",
+                move || {
+                    // Пользователь согласен выйти без сохранения
+                    *flag_discard.borrow_mut() = true;
+                    win_for_discard.close();
+                },
+                move || {
+                    // Пользователь сохранил и выходит
+                    do_save(false);
+                    *flag_save.borrow_mut() = true;
+                    win_for_save.close();
+                },
+            );
+            // Отменяем мгновенное закрытие, ждем ответа пользователя в диалоге
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+
     // --- Регистрация действий окна (GAction) для меню и шорткатов ---
     let actions = gio::SimpleActionGroup::new();
 
@@ -345,14 +424,22 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     actions.add_action(&save_action);
 
     // Действие win.open
-    let open_btn_clone = open_btn.clone();
+    let do_open_action = do_open_dialog.clone();
     let open_action = gio::SimpleAction::new("open", None);
     open_action.connect_activate(move |_, _| {
-        open_btn_clone.emit_clicked();
+        do_open_action();
     });
     actions.add_action(&open_action);
 
-    // Действие win.toggle_preview (Ctrl+P)
+    // Действие win.close (Ctrl+Q / Ctrl+F4)
+    let win_for_close_action = window.clone();
+    let close_action = gio::SimpleAction::new("close", None);
+    close_action.connect_activate(move |_, _| {
+        win_for_close_action.close();
+    });
+    actions.add_action(&close_action);
+
+    // Действие win.toggle_preview (Ctrl+Tab)
     let toggle_state = app_state.clone();
     let toggle_view_shortcut = toggle_view.clone();
     let preview_action = gio::SimpleAction::new("toggle_preview", None);
@@ -406,8 +493,69 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     // Переключение между вкладками Редактор и Просмотр по Ctrl+Tab / Ctrl+Shift+Tab
     app.set_accels_for_action("win.toggle_preview", &["<Control>Tab", "<Control>ISO_Left_Tab"]);
     app.set_accels_for_action("win.find", &["<Control>f"]);
+    // Закрытие окна / выход по Ctrl+Q или Ctrl+F4
+    app.set_accels_for_action("win.close", &["<Control>q", "<Control>F4"]);
 
     window
+}
+
+/// Отображает модальный диалог подтверждения при наличии несохраненных изменений (`adw::MessageDialog`).
+///
+/// # Аргументы
+/// * `parent` — родительское окно.
+/// * `heading` — крупный заголовок диалога.
+/// * `body` — подробное пояснение для пользователя.
+/// * `on_discard` — коллбэк, вызываемый при выборе «Отбросить изменения».
+/// * `on_save` — коллбэк, вызываемый при выборе «Сохранить».
+fn show_unsaved_changes_dialog<F1, F2>(
+    parent: &adw::ApplicationWindow,
+    heading: &str,
+    body: &str,
+    on_discard: F1,
+    on_save: F2,
+) where
+    F1: FnOnce() + 'static,
+    F2: FnOnce() + 'static,
+{
+    let dialog = adw::MessageDialog::builder()
+        .transient_for(parent)
+        .modal(true)
+        .heading(heading)
+        .body(body)
+        .build();
+
+    // Кнопка отмены (действие по умолчанию при Esc)
+    dialog.add_response("cancel", "Отмена");
+    // Деструктивное действие: отбросить несохраненное (подсвечивается красным)
+    dialog.add_response("discard", "Не сохранять");
+    dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
+    // Предлагаемое действие: сохранить перед выходом (подсвечивается синим/акцентом)
+    dialog.add_response("save", "Сохранить");
+    dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+
+    // Замыкание для обработки выбора пользователя
+    let on_discard = RefCell::new(Some(on_discard));
+    let on_save = RefCell::new(Some(on_save));
+
+    dialog.connect_response(None, move |_, response| {
+        match response {
+            "discard" => {
+                if let Some(cb) = on_discard.borrow_mut().take() {
+                    cb();
+                }
+            }
+            "save" => {
+                if let Some(cb) = on_save.borrow_mut().take() {
+                    cb();
+                }
+            }
+            _ => {
+                // "cancel" или закрытие диалога — ничего не делаем, отменяем операцию
+            }
+        }
+    });
+
+    dialog.present();
 }
 
 /// Обновляет заголовок окна: отображает имя текущего файла и звездочку `*` при наличии правок.
