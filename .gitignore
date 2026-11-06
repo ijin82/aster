@@ -1,1 +1,37 @@
+# --- Артефакты сборки Rust / Cargo ---
 /target
+**/*.rs.bk
+Cargo.lock.backup
+
+# --- Временные файлы редакторов и IDE ---
+# VS Code / VSCodium
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+*.code-workspace
+
+# Vim / Neovim
+*~
+*.swp
+*.swo
+
+# JetBrains (CLion, RustRover, etc.)
+.idea/
+*.iml
+
+# Emacs
+\#*\#
+/.#*
+
+# --- Временные файлы ОС и файловых систем ---
+.DS_Store
+Thumbs.db
+*.bak
+*.tmp
+*.orig
+
+# --- Логи и дампы ---
+*.log
+core
+core.*
