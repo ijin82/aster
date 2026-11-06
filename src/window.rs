@@ -72,13 +72,13 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
 
     let edit_btn = gtk4::ToggleButton::builder()
         .icon_name("document-edit-symbolic")
-        .tooltip_text("Редактор (Ctrl+P для переключения)")
+        .tooltip_text("Редактор (Ctrl+Tab для переключения)")
         .active(true)
         .build();
 
     let preview_btn = gtk4::ToggleButton::builder()
         .icon_name("view-reveal-symbolic")
-        .tooltip_text("Просмотр Markdown (Ctrl+P для переключения)")
+        .tooltip_text("Просмотр Markdown (Ctrl+Tab для переключения)")
         .group(&edit_btn) // Объединяем кнопки в одну группу (радио-режим)
         .build();
 
@@ -399,11 +399,12 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     // Настраиваем логику поиска подстроки
     setup_search(&search_entry, &text_view);
 
-    // Настраиваем глобальные горячие клавиши
+    // Настраиваем глобальные горячие клавиши (акселераторы)
     app.set_accels_for_action("win.save", &["<Control>s"]);
     app.set_accels_for_action("win.save_as", &["<Control><Shift>s"]);
     app.set_accels_for_action("win.open", &["<Control>o"]);
-    app.set_accels_for_action("win.toggle_preview", &["<Control>p"]);
+    // Переключение между вкладками Редактор и Просмотр по Ctrl+Tab / Ctrl+Shift+Tab
+    app.set_accels_for_action("win.toggle_preview", &["<Control>Tab", "<Control>ISO_Left_Tab"]);
     app.set_accels_for_action("win.find", &["<Control>f"]);
 
     window
