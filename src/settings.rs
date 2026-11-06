@@ -10,16 +10,24 @@ use std::path::PathBuf;
 pub struct AppSettings {
     /// Цветовая тема приложения: "system" (системная), "light" (светлая) или "dark" (тёмная).
     pub theme: String,
+    /// Семейство шрифта редактора (например, "Monospace", "Fira Code", "JetBrains Mono").
+    #[serde(default = "default_editor_font_family")]
+    pub editor_font_family: String,
     /// Размер шрифта текстового редактора в пунктах (pt).
     pub editor_font_size: u32,
     /// Размер базового шрифта в окне предпросмотра Markdown в пикселях (px).
     pub preview_font_size: u32,
 }
 
+fn default_editor_font_family() -> String {
+    "Monospace".to_string()
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             theme: "system".to_string(),
+            editor_font_family: default_editor_font_family(),
             editor_font_size: 14,
             preview_font_size: 16,
         }

@@ -135,8 +135,20 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
         .right_margin(18)
         .top_margin(14)
         .bottom_margin(14)
-        .monospace(true)
         .build();
+
+    // Задаем уникальный CSS-класс для изолированной стилизации шрифта редактора
+    text_view.add_css_class("editor-view");
+
+    // Создаем выделенный CssProvider для динамического применения настроек шрифта редактора
+    let editor_css_provider = gtk4::CssProvider::new();
+    if let Some(display) = gtk4::gdk::Display::default() {
+        gtk4::style_context_add_provider_for_display(
+            &display,
+            &editor_css_provider,
+            gtk4::STYLE_PROVIDER_PRIORITY_USER,
+        );
+    }
 
     let editor_scroll = gtk4::ScrolledWindow::builder()
         .child(&text_view)
@@ -158,8 +170,12 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     root_box.append(&view_stack);
     window.set_content(Some(&root_box));
 
-    // Применяем размер шрифта редактора из настроек
-    apply_editor_font(&text_view, app_state.settings.borrow().editor_font_size);
+    // Применяем семейство и размер шрифта редактора из сохраненных настроек
+    apply_editor_font(
+        &editor_css_provider,
+        &app_state.settings.borrow().editor_font_family,
+        app_state.settings.borrow().editor_font_size,
+    );
 
     // Если был передан файл при запуске — загружаем его содержимое
     let buffer = text_view.buffer();
@@ -341,11 +357,9 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
                 "Открыть другой файл?",
                 "В текущем файле есть несохраненные изменения. Открытие нового файла приведет к их потере.",
                 move || {
-                    // Пользователь выбрал отбросить изменения и открыть файл
                     trigger_open_discard();
                 },
                 move || {
-                    // Пользователь сохранил изменения перед открытием
                     do_save(false);
                     trigger_open_save();
                 },
@@ -361,8 +375,6 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     });
 
     // --- Обработчик закрытия окна (с предупреждением о несохраненных правках) ---
-    // Перехватываем сигнал 'close-request' окна: возвращение glib::Propagation::Stop
-    // отменяет закрытие окна, пока пользователь не подтвердит действие в диалоге.
     let state_for_close = app_state.clone();
     let do_save_for_close = do_save.clone();
     let is_force_closing = Rc::new(RefCell::new(false));
@@ -386,18 +398,15 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
                 "Закрыть без сохранения?",
                 "В документе есть несохраненные изменения. Закрытие приведет к их потере.",
                 move || {
-                    // Пользователь согласен выйти без сохранения
                     *flag_discard.borrow_mut() = true;
                     win_for_discard.close();
                 },
                 move || {
-                    // Пользователь сохранил и выходит
                     do_save(false);
                     *flag_save.borrow_mut() = true;
                     win_for_save.close();
                 },
             );
-            // Отменяем мгновенное закрытие, ждем ответа пользователя в диалоге
             glib::Propagation::Stop
         } else {
             glib::Propagation::Proceed
@@ -464,12 +473,12 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
 
     // Действие win.preferences
     let window_for_pref = window.clone();
-    let text_view_for_pref = text_view.clone();
+    let css_provider_for_pref = editor_css_provider.clone();
     let state_for_pref = app_state.clone();
     let refresh_pref = refresh_preview.clone();
     let pref_action = gio::SimpleAction::new("preferences", None);
     pref_action.connect_activate(move |_, _| {
-        show_preferences_dialog(&window_for_pref, &state_for_pref, &text_view_for_pref, refresh_pref.clone());
+        show_preferences_dialog(&window_for_pref, &state_for_pref, &css_provider_for_pref, refresh_pref.clone());
     });
     actions.add_action(&pref_action);
 
@@ -500,13 +509,6 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
 }
 
 /// Отображает модальный диалог подтверждения при наличии несохраненных изменений (`adw::MessageDialog`).
-///
-/// # Аргументы
-/// * `parent` — родительское окно.
-/// * `heading` — крупный заголовок диалога.
-/// * `body` — подробное пояснение для пользователя.
-/// * `on_discard` — коллбэк, вызываемый при выборе «Отбросить изменения».
-/// * `on_save` — коллбэк, вызываемый при выборе «Сохранить».
 fn show_unsaved_changes_dialog<F1, F2>(
     parent: &adw::ApplicationWindow,
     heading: &str,
@@ -524,16 +526,12 @@ fn show_unsaved_changes_dialog<F1, F2>(
         .body(body)
         .build();
 
-    // Кнопка отмены (действие по умолчанию при Esc)
     dialog.add_response("cancel", "Отмена");
-    // Деструктивное действие: отбросить несохраненное (подсвечивается красным)
     dialog.add_response("discard", "Не сохранять");
     dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
-    // Предлагаемое действие: сохранить перед выходом (подсвечивается синим/акцентом)
     dialog.add_response("save", "Сохранить");
     dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
 
-    // Замыкание для обработки выбора пользователя
     let on_discard = RefCell::new(Some(on_discard));
     let on_save = RefCell::new(Some(on_save));
 
@@ -549,9 +547,7 @@ fn show_unsaved_changes_dialog<F1, F2>(
                     cb();
                 }
             }
-            _ => {
-                // "cancel" или закрытие диалога — ничего не делаем, отменяем операцию
-            }
+            _ => {}
         }
     });
 
@@ -583,30 +579,22 @@ fn apply_color_scheme(theme: &str) {
     }
 }
 
-/// Динамически изменяет размер шрифта в `GtkTextView` с помощью `CssProvider`.
-fn apply_editor_font(_text_view: &gtk4::TextView, font_size: u32) {
-    let css = format!("textview text {{ font-size: {font_size}pt; }}");
-    let provider = gtk4::CssProvider::new();
+/// Динамически изменяет семейство и размер шрифта в `GtkTextView` через `CssProvider`.
+///
+/// Обрати внимание: мы стилизуем `.editor-view text` и задаем `!important`,
+/// чтобы переопределить встроенные стили темы Adwaita для текстового поля.
+fn apply_editor_font(provider: &gtk4::CssProvider, font_family: &str, font_size: u32) {
+    let css = format!(
+        ".editor-view, .editor-view text {{ font-family: \"{font_family}\", monospace !important; font-size: {font_size}pt !important; }}"
+    );
     provider.load_from_data(&css);
-
-    if let Some(display) = gtk4::gdk::Display::default() {
-        gtk4::style_context_add_provider_for_display(
-            &display,
-            &provider,
-            gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
-        );
-    }
 }
 
 /// Настраивает механизм поиска по текстовому буферу `GtkTextBuffer`.
-///
-/// Для каждого найденного вхождения применяется текстовый тег (`TextTag`) с подсветкой фона.
-/// Курсор и прокрутка автоматически переводятся на первое совпадение.
 fn setup_search(entry: &gtk4::SearchEntry, text_view: &gtk4::TextView) {
     let buffer = text_view.buffer();
     let text_view = text_view.clone();
 
-    // Создаем тег подсветки найденных фрагментов текста
     let tag_table = buffer.tag_table();
     let highlight_tag = gtk4::TextTag::builder()
         .name("search-match")
@@ -619,7 +607,6 @@ fn setup_search(entry: &gtk4::SearchEntry, text_view: &gtk4::TextView) {
         let query = search_entry.text().to_string();
         let start = buffer.start_iter();
         let end = buffer.end_iter();
-        // Очищаем предыдущую подсветку
         buffer.remove_tag_by_name("search-match", &start, &end);
 
         if query.is_empty() {
@@ -629,7 +616,6 @@ fn setup_search(entry: &gtk4::SearchEntry, text_view: &gtk4::TextView) {
         let mut iter = buffer.start_iter();
         let mut first_match = None;
 
-        // Ищем все вхождения подстроки без учета регистра
         while let Some((match_start, match_end)) = iter.forward_search(&query, gtk4::TextSearchFlags::CASE_INSENSITIVE, None) {
             buffer.apply_tag_by_name("search-match", &match_start, &match_end);
             if first_match.is_none() {
@@ -638,7 +624,6 @@ fn setup_search(entry: &gtk4::SearchEntry, text_view: &gtk4::TextView) {
             iter = match_end;
         }
 
-        // Прокручиваем редактор к первому совпадению
         if let Some(pos) = first_match {
             buffer.place_cursor(&pos);
             let mark = buffer.create_mark(None, &pos, false);
@@ -652,14 +637,14 @@ fn setup_search(entry: &gtk4::SearchEntry, text_view: &gtk4::TextView) {
 fn show_preferences_dialog(
     parent: &adw::ApplicationWindow,
     state: &AppState,
-    text_view: &gtk4::TextView,
+    editor_css_provider: &gtk4::CssProvider,
     refresh_preview: Rc<dyn Fn()>,
 ) {
     let window = adw::PreferencesWindow::builder()
         .transient_for(parent)
         .modal(true)
         .title("Настройки")
-        .default_width(450)
+        .default_width(480)
         .build();
 
     let page = adw::PreferencesPage::new();
@@ -703,11 +688,50 @@ fn show_preferences_dialog(
     appearance_group.add(&theme_row);
     page.add(&appearance_group);
 
-    // Секция 2: Размеры шрифтов
+    // Секция 2: Шрифты редактора и предпросмотра
     let fonts_group = adw::PreferencesGroup::builder()
         .title("Шрифты")
-        .description("Настройка масштаба текста")
+        .description("Настройка гарнитуры и размера текста")
         .build();
+
+    // Список популярных моноширинных и системных шрифтов
+    let font_options = [
+        "Monospace",
+        "JetBrains Mono",
+        "Fira Code",
+        "Source Code Pro",
+        "Ubuntu Mono",
+        "DejaVu Sans Mono",
+        "Liberation Mono",
+        "Cantarell",
+        "Sans",
+    ];
+
+    let font_family_row = adw::ComboRow::builder()
+        .title("Шрифт редактора")
+        .subtitle("Выбор гарнитуры (font-family)")
+        .model(&gtk4::StringList::new(&font_options))
+        .build();
+
+    let saved_font_family = state.settings.borrow().editor_font_family.clone();
+    let initial_font_idx = font_options
+        .iter()
+        .position(|&f| f.eq_ignore_ascii_case(&saved_font_family))
+        .unwrap_or(0);
+    font_family_row.set_selected(initial_font_idx as u32);
+
+    let state_font_family = state.clone();
+    let provider_font_family = editor_css_provider.clone();
+    font_family_row.connect_selected_notify(move |row| {
+        let idx = row.selected() as usize;
+        if let Some(&selected_font) = font_options.get(idx) {
+            state_font_family.settings.borrow_mut().editor_font_family = selected_font.to_string();
+            state_font_family.settings.borrow().save();
+            let size = state_font_family.settings.borrow().editor_font_size;
+            apply_editor_font(&provider_font_family, selected_font, size);
+        }
+    });
+    fonts_group.add(&font_family_row);
 
     // Размер шрифта текстового редактора
     let editor_spin = adw::SpinRow::builder()
@@ -722,13 +746,14 @@ fn show_preferences_dialog(
         ))
         .build();
 
-    let text_view_clone = text_view.clone();
     let state_editor_font = state.clone();
+    let provider_editor_font = editor_css_provider.clone();
     editor_spin.connect_changed(move |row| {
         let size = row.value() as u32;
         state_editor_font.settings.borrow_mut().editor_font_size = size;
         state_editor_font.settings.borrow().save();
-        apply_editor_font(&text_view_clone, size);
+        let family = state_editor_font.settings.borrow().editor_font_family.clone();
+        apply_editor_font(&provider_editor_font, &family, size);
     });
     fonts_group.add(&editor_spin);
 
