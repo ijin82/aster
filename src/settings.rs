@@ -1,0 +1,65 @@
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
+
+/// Структура настроек приложения.
+///
+/// Сериализуется и десериализуется в JSON с помощью библиотеки `serde`.
+/// Значения по умолчанию задаются через трейт `Default`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppSettings {
+    /// Цветовая тема приложения: "system" (системная), "light" (светлая) или "dark" (тёмная).
+    pub theme: String,
+    /// Размер шрифта текстового редактора в пунктах (pt).
+    pub editor_font_size: u32,
+    /// Размер базового шрифта в окне предпросмотра Markdown в пикселях (px).
+    pub preview_font_size: u32,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            theme: "system".to_string(),
+            editor_font_size: 14,
+            preview_font_size: 16,
+        }
+    }
+}
+
+impl AppSettings {
+    /// Возвращает путь к файлу конфигурации:
+    /// Обычно это `~/.config/rmd-view/settings.json` в Linux (по стандарту XDG).
+    fn config_path() -> Option<PathBuf> {
+        dirs::config_dir().map(|mut p| {
+            p.push("rmd-view");
+            p.push("settings.json");
+            p
+        })
+    }
+
+    /// Загружает настройки из файла конфигурации.
+    /// Если файл отсутствует или поврежден, возвращаются настройки по умолчанию.
+    pub fn load() -> Self {
+        if let Some(path) = Self::config_path() {
+            if let Ok(content) = fs::read_to_string(&path) {
+                if let Ok(settings) = serde_json::from_str::<AppSettings>(&content) {
+                    return settings;
+                }
+            }
+        }
+        Self::default()
+    }
+
+    /// Сохраняет текущие настройки на диск в формате JSON с отступами.
+    /// Создает директорию `~/.config/rmd-view`, если она еще не существует.
+    pub fn save(&self) {
+        if let Some(path) = Self::config_path() {
+            if let Some(parent) = path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            if let Ok(json) = serde_json::to_string_pretty(self) {
+                let _ = fs::write(path, json);
+            }
+        }
+    }
+}
