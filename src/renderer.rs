@@ -33,10 +33,15 @@ pub fn render_markdown_to_html(markdown_input: &str, is_dark: bool, font_size_px
     let mut html_output = String::new();
     html::push_html(&mut html_output, parser);
 
-    // В github-markdown-css темы активируются через атрибут [data-theme="dark"] или [data-theme="light"]
+    // Настраиваем цвета и переменные GitHub в зависимости от выбранной темы
     let theme_mode = if is_dark { "dark" } else { "light" };
-    let bg_color = if is_dark { "#0d1117" } else { "#ffffff" };
-    let text_color = if is_dark { "#e6edf3" } else { "#1f2328" };
+
+    // Цвета для фона, текста, границ и строк таблиц (точно по палитре Primer GitHub)
+    let (bg_default, bg_muted, fg_default, border_default) = if is_dark {
+        ("#0d1117", "#151b23", "#f0f6fc", "#30363d")
+    } else {
+        ("#ffffff", "#f6f8fa", "#1f2328", "#d0d7de")
+    };
 
     // Формируем готовый HTML5 документ с CSS-переменными темы GitHub
     format!(
@@ -51,8 +56,8 @@ pub fn render_markdown_to_html(markdown_input: &str, is_dark: bool, font_size_px
         html, body {{
             margin: 0;
             padding: 0;
-            background-color: {bg_color} !important;
-            color: {text_color} !important;
+            background-color: {bg_default} !important;
+            color: {fg_default} !important;
             color-scheme: {theme_mode};
         }}
 
@@ -71,11 +76,50 @@ pub fn render_markdown_to_html(markdown_input: &str, is_dark: bool, font_size_px
             }}
         }}
 
-        /* Применяем размер шрифта и обеспечиваем контрастный цвет текста */
         .markdown-body {{
             background-color: transparent !important;
-            color: {text_color} !important;
+            color: {fg_default} !important;
             font-size: {font_size_px}px;
+        }}
+
+        /* Гарантированная читаемость таблиц (GFM Tables) */
+        .markdown-body table {{
+            border-collapse: collapse !important;
+            width: max-content;
+            max-width: 100%;
+            margin-top: 1em;
+            margin-bottom: 1.5em;
+            color: {fg_default} !important;
+        }}
+
+        .markdown-body table th {{
+            background-color: {bg_muted} !important;
+            color: {fg_default} !important;
+            font-weight: 600;
+            padding: 8px 14px;
+            border: 1px solid {border_default} !important;
+        }}
+
+        .markdown-body table td {{
+            color: {fg_default} !important;
+            padding: 8px 14px;
+            border: 1px solid {border_default} !important;
+        }}
+
+        .markdown-body table tr {{
+            background-color: {bg_default} !important;
+            border-top: 1px solid {border_default} !important;
+        }}
+
+        /* Чередование строк таблицы (зебра) */
+        .markdown-body table tr:nth-child(2n) {{
+            background-color: {bg_muted} !important;
+        }}
+
+        /* Текст внутри кодовых вставок в таблице `code` */
+        .markdown-body table code {{
+            color: {fg_default} !important;
+            background-color: rgba(127, 127, 127, 0.15) !important;
         }}
     </style>
 </head>
