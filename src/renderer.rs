@@ -33,30 +33,35 @@ pub fn render_markdown_to_html(markdown_input: &str, is_dark: bool, font_size_px
     let mut html_output = String::new();
     html::push_html(&mut html_output, parser);
 
-    // Подбираем атрибуты и цвета под светлую/темную тему GitHub
+    // В github-markdown-css темы активируются через атрибут [data-theme="dark"] или [data-theme="light"]
     let theme_mode = if is_dark { "dark" } else { "light" };
     let bg_color = if is_dark { "#0d1117" } else { "#ffffff" };
-    let text_color = if is_dark { "#c9d1d9" } else { "#1f2328" };
+    let text_color = if is_dark { "#e6edf3" } else { "#1f2328" };
 
     // Формируем готовый HTML5 документ с CSS-переменными темы GitHub
     format!(
         r#"<!DOCTYPE html>
-<html lang="en" data-color-mode="{theme_mode}" data-light-theme="light" data-dark-theme="dark">
+<html lang="en" data-theme="{theme_mode}">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         {GITHUB_CSS}
 
-        /* Настройки отступов и фона контейнера документа */
+        html, body {{
+            margin: 0;
+            padding: 0;
+            background-color: {bg_color} !important;
+            color: {text_color} !important;
+            color-scheme: {theme_mode};
+        }}
+
         body {{
             box-sizing: border-box;
             min-width: 200px;
             max-width: 980px;
             margin: 0 auto;
             padding: 35px 45px;
-            background-color: {bg_color};
-            color: {text_color};
             font-size: {font_size_px}px;
         }}
 
@@ -66,14 +71,15 @@ pub fn render_markdown_to_html(markdown_input: &str, is_dark: bool, font_size_px
             }}
         }}
 
-        /* Применяем размер шрифта к телу markdown */
+        /* Применяем размер шрифта и обеспечиваем контрастный цвет текста */
         .markdown-body {{
             background-color: transparent !important;
+            color: {text_color} !important;
             font-size: {font_size_px}px;
         }}
     </style>
 </head>
-<body class="markdown-body">
+<body class="markdown-body" data-theme="{theme_mode}">
 {html_output}
 </body>
 </html>"#
