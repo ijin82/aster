@@ -8,6 +8,7 @@ use adw::prelude::*;
 use std::env;
 use std::path::PathBuf;
 mod highlighter;
+mod i18n;
 mod renderer;
 mod settings;
 mod window;

@@ -29,9 +29,10 @@
 - **Поиск по файлу (`Ctrl+F`)**:
   - Панель поиска с подсветкой всех найденных вхождений и навигацией.
 - **Настройки (`Preferences`)**:
+  - **Выбор языка интерфейса**: переключение между **Русским** и **English** с мгновенным обновлением UI и сохранением в настройках.
   - Выбор темы оформления: **Системная**, **GitHub Light**, **GitHub Dark**, **Dracula**, **Kimbie Dark**, **Solarized Dark**, **Solarized Light** (применяется одновременно к предпросмотру и к редактору кода).
   - Настройка боковых полей предпросмотра (padding в %, по умолчанию 5% с каждой стороны).
-  - Выбор гарнитуры шрифта редактора (font-family: `Monospace`, `JetBrains Mono`, `Fira Code`, `Source Code Pro` и др.).
+  - **Выбор из всех моноширинных шрифтов системы** (динамическое определение через Pango Context: `Cascadia Code`, `Fira Code`, `JetBrains Mono`, `Adwaita Mono`, `DejaVu Sans Mono`, `Liberation Mono` и др.).
   - Размер шрифта в редакторе (применяется на лету).
   - Размер шрифта в окне предпросмотра.
   - Сохранение настроек в формате JSON по стандарту XDG (`~/.config/rmd-view/settings.json`).
@@ -149,5 +150,6 @@ cargo run -- test.md
   - Подсветка текста через `GtkTextTag` и поиск `GtkTextIter::forward_search`.
   - Диалог настроек `adw::PreferencesWindow` и динамическое применение CSS через `gtk4::CssProvider`.
 - [`src/highlighter.rs`](src/highlighter.rs) — встроенная подсветка синтаксиса Markdown для `GtkTextView` через создание и применение `GtkTextTag` (заголовки, жирный/курсив, код, ссылки, цитаты, списки) с палитрами для каждой темы оформления.
+- [`src/i18n.rs`](src/i18n.rs) — типизированная интернационализация и переводы элементов интерфейса (русский и английский языки).
 - [`src/renderer.rs`](src/renderer.rs) — парсинг Markdown с флагами GFM через `pulldown-cmark` и внедрение `github-markdown-css` во встроенный HTML-шаблон.
 - [`src/settings.rs`](src/settings.rs) — сохранение структуры настроек и геометрии окна в JSON через `serde` и библиотека `dirs` для работы с XDG Base Directory.

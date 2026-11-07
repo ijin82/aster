@@ -30,6 +30,13 @@ pub struct AppSettings {
     /// Сохраненная высота окна.
     #[serde(default = "default_window_height")]
     pub window_height: i32,
+    /// Язык интерфейса приложения ("ru" или "en").
+    #[serde(default = "default_language")]
+    pub language: String,
+}
+
+fn default_language() -> String {
+    "ru".to_string()
 }
 
 fn default_editor_font_family() -> String {
@@ -59,6 +66,7 @@ impl Default for AppSettings {
             window_maximized: false,
             window_width: default_window_width(),
             window_height: default_window_height(),
+            language: default_language(),
         }
     }
 }
