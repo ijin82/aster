@@ -33,6 +33,13 @@ pub struct AppSettings {
     /// Язык интерфейса приложения ("ru" или "en").
     #[serde(default = "default_language")]
     pub language: String,
+    /// Показывать ли номера строк в редакторе текста.
+    #[serde(default = "default_show_line_numbers")]
+    pub show_line_numbers: bool,
+}
+
+fn default_show_line_numbers() -> bool {
+    true
 }
 
 fn default_language() -> String {
@@ -67,6 +74,7 @@ impl Default for AppSettings {
             window_width: default_window_width(),
             window_height: default_window_height(),
             language: default_language(),
+            show_line_numbers: default_show_line_numbers(),
         }
     }
 }

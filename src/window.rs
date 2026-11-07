@@ -193,11 +193,20 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     }
     apply_editor_theme_css(&editor_theme_css_provider, &app_state.settings.borrow().theme, style_mgr.is_dark());
 
+    // Создаем виджет нумерации строк (Gutter DrawingArea) для левой колонки редактора
+    let line_numbers_gutter = setup_line_numbers_gutter(&text_view, &app_state);
+
     let editor_scroll = gtk4::ScrolledWindow::builder()
         .child(&text_view)
         .hexpand(true)
         .vexpand(true)
         .build();
+
+    // При прокрутке редактора принудительно перерисовываем номера строк
+    let gutter_for_scroll = line_numbers_gutter.clone();
+    editor_scroll.vadjustment().connect_value_changed(move |_| {
+        gutter_for_scroll.queue_draw();
+    });
 
     let editor_page = view_stack.add_titled(&editor_scroll, Some("editor"), current_lang.tab_editor());
 
@@ -282,11 +291,13 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     // Отслеживаем изменения текста пользователем
     let state_for_buffer_change = app_state.clone();
     let window_for_buffer_change = window.clone();
+    let gutter_for_buffer = line_numbers_gutter.clone();
     buffer.connect_changed(move |buf| {
         if !*state_for_buffer_change.is_modified.borrow() {
             *state_for_buffer_change.is_modified.borrow_mut() = true;
             update_window_title(&window_for_buffer_change, &state_for_buffer_change);
         }
+        gutter_for_buffer.queue_draw();
         highlighter::highlight_markdown_buffer(buf);
     });
 
@@ -724,6 +735,8 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     actions.add_action(&find_action);
 
     let window_for_pref = window.clone();
+    let text_view_for_pref = text_view.clone();
+    let line_numbers_gutter_for_pref = line_numbers_gutter.clone();
     let buffer_for_pref = buffer.clone();
     let tag_for_pref = editor_font_tag.clone();
     let tag_table_for_pref = tag_table.clone();
@@ -737,6 +750,8 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
         show_preferences_dialog(
             &window_for_pref,
             &state_for_pref,
+            &text_view_for_pref,
+            &line_numbers_gutter_for_pref,
             &buffer_for_pref,
             &tag_for_pref,
             &tag_table_for_pref,
@@ -796,6 +811,114 @@ fn apply_editor_theme_css(provider: &gtk4::CssProvider, theme: &str, is_dark: bo
         }}"
     );
     provider.load_from_data(&css);
+}
+
+/// Настраивает виджет нумерации строк (колонка Gutter слева от редактора `GtkTextView`).
+///
+/// В GTK4 поддерживается добавление дочерних виджетов в поля `TextWindowType::Left`
+/// через метод `set_gutter`. Виджет `gtk4::DrawingArea` выполняет отрисовку
+/// номеров строк, используя Cairo:
+/// - Автоматически рассчитывает видимый диапазон координат строк с учетом прокрутки (`window_to_buffer_coords`).
+/// - Преобразует координаты буфера в локальные координаты окна рисования (`buffer_to_window_coords`).
+/// - Динамически подбирает цвет текста номеров строк в зависимости от выбранной темы оформления.
+fn setup_line_numbers_gutter(text_view: &gtk4::TextView, state: &AppState) -> gtk4::DrawingArea {
+    let gutter = gtk4::DrawingArea::new();
+    gutter.set_content_width(48);
+
+    let text_view_clone = text_view.clone();
+    let state_for_draw = state.clone();
+
+    // Функция отрисовки номеров строк на поверхности DrawingArea через Cairo
+    gutter.set_draw_func(move |area, cr, width, height| {
+        let buffer = text_view_clone.buffer();
+        let total_lines = buffer.line_count();
+
+        // Динамически подстраиваем ширину колонки номеров строк:
+        // рассчитываем необходимое число цифр (минимум 3 символа)
+        let digits = format!("{total_lines}").len().max(3);
+        let needed_width = (digits as i32 * 9 + 20).max(40);
+        if area.content_width() != needed_width {
+            area.set_content_width(needed_width);
+        }
+
+        let theme = state_for_draw.settings.borrow().theme.clone();
+        let style_mgr = adw::StyleManager::default();
+        let is_dark = style_mgr.is_dark();
+
+        // Задаем цвет фона колонки и цвет номеров строк в гармонии с темой
+        let (bg_r, bg_g, bg_b, num_r, num_g, num_b) = match theme.as_str() {
+            "dracula" => (0.15, 0.16, 0.21, 0.40, 0.42, 0.54),
+            "kimbie_dark" => (0.11, 0.08, 0.05, 0.50, 0.42, 0.32),
+            "solarized_dark" => (0.00, 0.14, 0.18, 0.35, 0.43, 0.46),
+            "solarized_light" => (0.93, 0.90, 0.82, 0.58, 0.63, 0.63),
+            "dark" => (0.04, 0.05, 0.07, 0.38, 0.42, 0.47),
+            "light" => (0.97, 0.98, 0.99, 0.55, 0.58, 0.62),
+            _ => {
+                if is_dark {
+                    (0.04, 0.05, 0.07, 0.38, 0.42, 0.47)
+                } else {
+                    (0.97, 0.98, 0.99, 0.55, 0.58, 0.62)
+                }
+            }
+        };
+
+        // Заливаем фон колонки номеров
+        cr.set_source_rgb(bg_r, bg_g, bg_b);
+        let _ = cr.paint();
+
+        // Тонкая вертикальная разделительная линия справа от номеров строк
+        cr.set_source_rgba(num_r, num_g, num_b, 0.25);
+        cr.set_line_width(1.0);
+        cr.move_to((width as f64) - 0.5, 0.0);
+        cr.line_to((width as f64) - 0.5, height as f64);
+        let _ = cr.stroke();
+
+        // Определяем верхнюю и нижнюю границы видимой области буфера редактора
+        let (_, top_buf_y) = text_view_clone.window_to_buffer_coords(gtk4::TextWindowType::Left, 0, 0);
+        let (_, bottom_buf_y) = text_view_clone.window_to_buffer_coords(gtk4::TextWindowType::Left, 0, height);
+
+        let top_buf_y = top_buf_y.max(0);
+        let (mut iter, _) = text_view_clone.line_at_y(top_buf_y);
+
+        // Настройка параметров шрифта для номеров строк
+        let font_size = (state_for_draw.settings.borrow().editor_font_size as f64 * 0.85).max(9.0);
+        let font_family = state_for_draw.settings.borrow().editor_font_family.clone();
+        cr.select_font_face(&font_family, gtk4::cairo::FontSlant::Normal, gtk4::cairo::FontWeight::Normal);
+        cr.set_font_size(font_size);
+        cr.set_source_rgb(num_r, num_g, num_b);
+
+        // Цикл прохода по всем видимым на экране строкам документа
+        loop {
+            let (y_buf, h_buf) = text_view_clone.line_yrange(&iter);
+            let (_, win_y) = text_view_clone.buffer_to_window_coords(gtk4::TextWindowType::Left, 0, y_buf);
+
+            let line_num = iter.line() + 1;
+            let num_str = format!("{line_num}");
+
+            // Выравнивание номера строки по правому краю с отступом 8px от линии
+            if let Ok(extents) = cr.text_extents(&num_str) {
+                let x = (width as f64) - 8.0 - extents.width() - extents.x_bearing();
+                let y = (win_y as f64) + font_size + 2.0;
+
+                cr.move_to(x, y);
+                let _ = cr.show_text(&num_str);
+            }
+
+            // Завершаем отрисовку, когда вышли за пределы видимой по вертикали зоны или строк больше нет
+            if y_buf + h_buf > bottom_buf_y || !iter.forward_line() {
+                break;
+            }
+        }
+    });
+
+    // Устанавливаем или скрываем gutter согласно сохраненной настройке пользователя
+    if state.settings.borrow().show_line_numbers {
+        text_view.set_gutter(gtk4::TextWindowType::Left, Some(&gutter));
+    } else {
+        text_view.set_gutter(gtk4::TextWindowType::Left, None::<&gtk4::DrawingArea>);
+    }
+
+    gutter
 }
 
 /// Отображает модальный диалог подтверждения при наличии несохраненных изменений
@@ -940,6 +1063,8 @@ fn setup_search(entry: &gtk4::SearchEntry, text_view: &gtk4::TextView) {
 fn show_preferences_dialog(
     parent: &adw::ApplicationWindow,
     state: &AppState,
+    text_view: &gtk4::TextView,
+    line_numbers_gutter: &gtk4::DrawingArea,
     editor_buffer: &gtk4::TextBuffer,
     editor_font_tag: &gtk4::TextTag,
     tag_table: &gtk4::TextTagTable,
@@ -1034,6 +1159,7 @@ fn show_preferences_dialog(
     let tag_table_theme = tag_table.clone();
     let theme_provider_clone = editor_theme_provider.clone();
     let editor_buf_theme = editor_buffer.clone();
+    let gutter_for_theme = line_numbers_gutter.clone();
 
     theme_row.connect_selected_notify(move |row| {
         let idx = row.selected() as usize;
@@ -1046,6 +1172,7 @@ fn show_preferences_dialog(
             apply_editor_theme_css(&theme_provider_clone, selected_code, style_mgr.is_dark());
             highlighter::update_highlight_colors(&tag_table_theme, selected_code, style_mgr.is_dark());
             highlighter::highlight_markdown_buffer(&editor_buf_theme);
+            gutter_for_theme.queue_draw();
 
             refresh_for_theme();
         }
@@ -1111,6 +1238,7 @@ fn show_preferences_dialog(
     let buffer_for_font_family = editor_buffer.clone();
     let tag_for_font_family = editor_font_tag.clone();
     let font_options_clone = font_options.clone();
+    let gutter_for_font_family = line_numbers_gutter.clone();
 
     font_family_row.connect_selected_notify(move |row| {
         let idx = row.selected() as usize;
@@ -1119,6 +1247,7 @@ fn show_preferences_dialog(
             state_font_family.settings.borrow().save();
             let size = state_font_family.settings.borrow().editor_font_size;
             apply_editor_font(&buffer_for_font_family, &tag_for_font_family, selected_font, size);
+            gutter_for_font_family.queue_draw();
         }
     });
     fonts_group.add(&font_family_row);
@@ -1138,12 +1267,14 @@ fn show_preferences_dialog(
     let state_editor_font = state.clone();
     let buffer_for_spin = editor_buffer.clone();
     let tag_for_spin = editor_font_tag.clone();
+    let gutter_for_editor_size = line_numbers_gutter.clone();
     editor_spin.connect_changed(move |row| {
         let size = row.value() as u32;
         state_editor_font.settings.borrow_mut().editor_font_size = size;
         state_editor_font.settings.borrow().save();
         let family = state_editor_font.settings.borrow().editor_font_family.clone();
         apply_editor_font(&buffer_for_spin, &tag_for_spin, &family, size);
+        gutter_for_editor_size.queue_draw();
     });
     fonts_group.add(&editor_spin);
 
@@ -1168,6 +1299,32 @@ fn show_preferences_dialog(
         refresh_for_font();
     });
     fonts_group.add(&preview_spin);
+
+    // Переключатель отображения номеров строк в режиме редактирования
+    let line_numbers_row = adw::SwitchRow::builder()
+        .title(current_lang.pref_line_numbers_title())
+        .subtitle(current_lang.pref_line_numbers_subtitle())
+        .active(state.settings.borrow().show_line_numbers)
+        .build();
+
+    let state_line_numbers = state.clone();
+    let text_view_for_toggle = text_view.clone();
+    let gutter_for_toggle = line_numbers_gutter.clone();
+
+    line_numbers_row.connect_active_notify(move |row| {
+        let is_active = row.is_active();
+        state_line_numbers.settings.borrow_mut().show_line_numbers = is_active;
+        state_line_numbers.settings.borrow().save();
+
+        // Динамически подключаем или отключаем DrawingArea gutter
+        if is_active {
+            text_view_for_toggle.set_gutter(gtk4::TextWindowType::Left, Some(&gutter_for_toggle));
+            gutter_for_toggle.queue_draw();
+        } else {
+            text_view_for_toggle.set_gutter(gtk4::TextWindowType::Left, None::<&gtk4::DrawingArea>);
+        }
+    });
+    fonts_group.add(&line_numbers_row);
 
     page.add(&fonts_group);
     window.add(&page);

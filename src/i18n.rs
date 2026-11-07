@@ -327,6 +327,20 @@ impl Language {
         }
     }
 
+    pub fn pref_line_numbers_title(&self) -> &'static str {
+        match self {
+            Language::Russian => "Номера строк",
+            Language::English => "Line Numbers",
+        }
+    }
+
+    pub fn pref_line_numbers_subtitle(&self) -> &'static str {
+        match self {
+            Language::Russian => "Отображать колонку с номерами строк в редакторе",
+            Language::English => "Display line numbers column in editor",
+        }
+    }
+
     // --- Окно «О программе» (About) ---
 
     pub fn about_comments(&self) -> &'static str {
