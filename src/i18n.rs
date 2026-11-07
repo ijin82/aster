@@ -51,6 +51,13 @@ impl Language {
         }
     }
 
+    pub fn tooltip_save_unsaved(&self) -> &'static str {
+        match self {
+            Language::Russian => "Сохранить (Ctrl+S) — Есть несохраненные изменения",
+            Language::English => "Save (Ctrl+S) — Unsaved changes",
+        }
+    }
+
     pub fn tooltip_edit_mode(&self) -> &'static str {
         match self {
             Language::Russian => "Редактор (Ctrl+Tab для переключения)",

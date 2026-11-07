@@ -259,7 +259,7 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
             menu.append(Some(lang.menu_about()), Some("win.about"));
             menu.append(Some(lang.menu_close()), Some("win.close"));
 
-            update_window_title(&window, &state);
+            update_window_title_and_save_status(&window, &save_btn, &state);
         })
     };
 
@@ -285,17 +285,22 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
         }
     }
 
-    // Первоначальное обновление заголовка окна
-    update_window_title(&window, &app_state);
+    // Первоначальное обновление заголовка окна и кнопки «Сохранить»
+    update_window_title_and_save_status(&window, &save_btn, &app_state);
 
     // Отслеживаем изменения текста пользователем
     let state_for_buffer_change = app_state.clone();
     let window_for_buffer_change = window.clone();
+    let save_btn_for_buffer_change = save_btn.clone();
     let gutter_for_buffer = line_numbers_gutter.clone();
     buffer.connect_changed(move |buf| {
         if !*state_for_buffer_change.is_modified.borrow() {
             *state_for_buffer_change.is_modified.borrow_mut() = true;
-            update_window_title(&window_for_buffer_change, &state_for_buffer_change);
+            update_window_title_and_save_status(
+                &window_for_buffer_change,
+                &save_btn_for_buffer_change,
+                &state_for_buffer_change,
+            );
         }
         gutter_for_buffer.queue_draw();
         highlighter::highlight_markdown_buffer(buf);
@@ -479,6 +484,7 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     let save_action_buffer = buffer.clone();
     let save_action_state = app_state.clone();
     let save_action_window = window.clone();
+    let save_action_btn = save_btn.clone();
     let do_save = Rc::new(move |save_as: bool| {
         let current_path = save_action_state.current_file.borrow().clone();
         let lang = Language::from_code(&save_action_state.settings.borrow().language);
@@ -490,7 +496,7 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
             let text = save_action_buffer.text(&start, &end, false);
             if std::fs::write(&path, text.as_bytes()).is_ok() {
                 *save_action_state.is_modified.borrow_mut() = false;
-                update_window_title(&save_action_window, &save_action_state);
+                update_window_title_and_save_status(&save_action_window, &save_action_btn, &save_action_state);
             }
         } else {
             let file_dialog = gtk4::FileDialog::builder()
@@ -508,6 +514,7 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
             let buffer = save_action_buffer.clone();
             let state = save_action_state.clone();
             let win = save_action_window.clone();
+            let btn = save_action_btn.clone();
 
             file_dialog.save(Some(&save_action_window), gio::Cancellable::NONE, move |res| {
                 if let Ok(file) = res {
@@ -518,7 +525,7 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
                         if std::fs::write(&path, text.as_bytes()).is_ok() {
                             *state.current_file.borrow_mut() = Some(path);
                             *state.is_modified.borrow_mut() = false;
-                            update_window_title(&win, &state);
+                            update_window_title_and_save_status(&win, &btn, &state);
                         }
                     }
                 }
@@ -533,6 +540,7 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
 
     // --- Обработчик открытия файла ---
     let window_for_open = window.clone();
+    let save_btn_for_open = save_btn.clone();
     let buffer_for_open = buffer.clone();
     let state_for_open = app_state.clone();
     let do_save_for_open = do_save.clone();
@@ -555,6 +563,7 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
         let buffer = buffer_for_open.clone();
         let state = state_for_open.clone();
         let win = window_for_open.clone();
+        let btn = save_btn_for_open.clone();
         let tag = font_tag_for_open.clone();
 
         file_dialog.open(Some(&window_for_open), gio::Cancellable::NONE, move |res| {
@@ -568,7 +577,7 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
                         highlighter::highlight_markdown_buffer(&buffer);
                         *state.current_file.borrow_mut() = Some(path);
                         *state.is_modified.borrow_mut() = false;
-                        update_window_title(&win, &state);
+                        update_window_title_and_save_status(&win, &btn, &state);
                     }
                 }
             }
@@ -968,8 +977,15 @@ fn show_unsaved_changes_dialog<F1, F2>(
     dialog.present();
 }
 
-/// Обновляет заголовок окна: отображает имя текущего файла и звездочку `*` при наличии правок.
-fn update_window_title(window: &adw::ApplicationWindow, state: &AppState) {
+/// Обновляет заголовок окна и состояние кнопки сохранения:
+/// - Отображает имя текущего файла и элегантный маркер `●` при наличии правок (в стиле GNOME Text Editor).
+/// - Подсвечивает кнопку сохранения стилем `.suggested-action` (акцентный цвет) только когда есть изменения.
+/// - Динамически обновляет тултип кнопки («Сохранить (Ctrl+S) — Есть несохраненные изменения»).
+fn update_window_title_and_save_status(
+    window: &adw::ApplicationWindow,
+    save_btn: &gtk4::Button,
+    state: &AppState,
+) {
     let lang = Language::from_code(&state.settings.borrow().language);
     let default_name = match lang {
         Language::Russian => "Безымянный",
@@ -985,8 +1001,20 @@ fn update_window_title(window: &adw::ApplicationWindow, state: &AppState) {
         default_name.to_string()
     };
 
-    let modified_marker = if *state.is_modified.borrow() { "*" } else { "" };
+    let is_modified = *state.is_modified.borrow();
+
+    // Маркер в заголовке: аккуратная точка '● ' перед именем файла при наличии изменений
+    let modified_marker = if is_modified { "● " } else { "" };
     window.set_title(Some(&format!("{modified_marker}{filename} — rmd-view")));
+
+    // Управление стилем и тултипом кнопки «Сохранить»
+    if is_modified {
+        save_btn.add_css_class("suggested-action");
+        save_btn.set_tooltip_text(Some(lang.tooltip_save_unsaved()));
+    } else {
+        save_btn.remove_css_class("suggested-action");
+        save_btn.set_tooltip_text(Some(lang.tooltip_save()));
+    }
 }
 
 /// Применяет выбранную цветовую схему к Adwaita StyleManager
