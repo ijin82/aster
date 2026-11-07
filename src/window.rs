@@ -7,64 +7,61 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use webkit6::prelude::*;
 
+use crate::highlighter;
 use crate::renderer;
 use crate::settings::AppSettings;
 
 /// Состояние приложения, разделяемое между различными обработчиками сигналов GTK.
-///
-/// В GTK4 обработчики событий (closures) требуют владения захваченными переменными.
-/// Связка `Rc<RefCell<T>>` позволяет безопасно разделять и изменять общее состояние
-/// в пределах одного потока UI без блокировок.
 #[derive(Clone)]
 pub struct AppState {
     /// Путь к текущему открытому файлу (None, если файл новый / безымянный).
     pub current_file: Rc<RefCell<Option<PathBuf>>>,
     /// Флаг наличия несохраненных изменений в тексте.
     pub is_modified: Rc<RefCell<bool>>,
-    /// Текущие пользовательские настройки (тема, шрифты).
+    /// Текущие пользовательские настройки (тема, шрифты, отступы, состояние окна).
     pub settings: Rc<RefCell<AppSettings>>,
     /// Активен ли сейчас режим предпросмотра (true) или редактор (false).
     pub is_preview_active: Rc<RefCell<bool>>,
+    /// Запоминаем долю прокрутки (0.0 .. 1.0) для синхронизации позиции между режимами
+    pub scroll_ratio: Rc<RefCell<f64>>,
 }
 
 /// Создает и конфигурирует главное окно приложения.
-///
-/// # Аргументы
-/// * `app` — ссылка на экземпляр `adw::Application`.
-/// * `initial_file` — опциональный путь к файлу для открытия при старте.
 pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> adw::ApplicationWindow {
-    // Загружаем сохраненные настройки
     let settings = AppSettings::load();
     let app_state = AppState {
         current_file: Rc::new(RefCell::new(initial_file.clone())),
         is_modified: Rc::new(RefCell::new(false)),
-        settings: Rc::new(RefCell::new(settings)),
+        settings: Rc::new(RefCell::new(settings.clone())),
         is_preview_active: Rc::new(RefCell::new(false)),
+        scroll_ratio: Rc::new(RefCell::new(0.0)),
     };
 
     // Применяем цветовую схему из настроек
     apply_color_scheme(&app_state.settings.borrow().theme);
 
-    // Создаем главное окно в стиле Libadwaita
+    // Создаем главное окно в стиле Libadwaita с сохраненными размерами
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("rmd-view")
-        .default_width(960)
-        .default_height(720)
+        .default_width(settings.window_width)
+        .default_height(settings.window_height)
         .build();
 
-    // Корневой вертикальный контейнер: Заголовок + Строка поиска + Рабочая область
+    // Восстанавливаем состояние "на весь экран", если оно было сохранено
+    if settings.window_maximized {
+        window.maximize();
+    }
+
     let root_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
 
     // --- 1. Заголовочная панель (HeaderBar) ---
     let header_bar = adw::HeaderBar::new();
 
-    // Кнопка открытия файла
     let open_btn = gtk4::Button::from_icon_name("document-open-symbolic");
     open_btn.set_tooltip_text(Some("Открыть файл (Ctrl+O)"));
     header_bar.pack_start(&open_btn);
 
-    // Кнопка сохранения файла
     let save_btn = gtk4::Button::from_icon_name("document-save-symbolic");
     save_btn.set_tooltip_text(Some("Сохранить (Ctrl+S)"));
     header_bar.pack_start(&save_btn);
@@ -81,29 +78,26 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     let preview_btn = gtk4::ToggleButton::builder()
         .icon_name("view-reveal-symbolic")
         .tooltip_text("Просмотр Markdown (Ctrl+Tab для переключения)")
-        .group(&edit_btn) // Объединяем кнопки в одну группу (радио-режим)
+        .group(&edit_btn)
         .build();
 
     let switch_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-    switch_box.add_css_class("linked"); // Стиль GNOME для связанных кнопок
+    switch_box.add_css_class("linked");
     switch_box.append(&edit_btn);
     switch_box.append(&preview_btn);
     header_bar.set_title_widget(Some(&switch_box));
 
-    // Кнопка активации поиска
     let search_btn = gtk4::ToggleButton::builder()
         .icon_name("edit-find-symbolic")
         .tooltip_text("Поиск подстроки (Ctrl+F)")
         .build();
     header_bar.pack_end(&search_btn);
 
-    // Кнопка главного меню (гамбургер)
     let menu_btn = gtk4::MenuButton::builder()
         .icon_name("open-menu-symbolic")
         .tooltip_text("Главное меню")
         .build();
 
-    // Описываем модель меню через GMenu
     let menu = gio::Menu::new();
     menu.append(Some("Сохранить как..."), Some("win.save_as"));
     menu.append(Some("Настройки"), Some("win.preferences"));
@@ -114,7 +108,7 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
 
     root_box.append(&header_bar);
 
-    // --- 2. Панель поиска (GtkSearchBar + GtkSearchEntry) ---
+    // --- 2. Панель поиска ---
     let search_bar = gtk4::SearchBar::new();
     let search_entry = gtk4::SearchEntry::new();
     search_entry.set_hexpand(true);
@@ -122,7 +116,6 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     search_box.append(&search_entry);
     search_bar.set_child(Some(&search_box));
     search_bar.connect_entry(&search_entry);
-    // Связываем состояние кнопки поиска в шапке с видимостью панели поиска
     search_bar.bind_property("search-mode-enabled", &search_btn, "active")
         .bidirectional()
         .sync_create()
@@ -130,14 +123,20 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     root_box.append(&search_bar);
 
     // --- 3. Рабочая область: Редактор текста ---
-    // Создаем TextTagTable и тег "editor-font", который будет управлять гарнитурой и размером шрифта
     let tag_table = gtk4::TextTagTable::new();
     let editor_font_tag = gtk4::TextTag::builder()
         .name("editor-font")
         .build();
     tag_table.add(&editor_font_tag);
 
-    // Создаем TextBuffer с предварительно настроенной таблицей тегов
+    // Регистрируем теги подсветки синтаксиса Markdown
+    let style_mgr = adw::StyleManager::default();
+    highlighter::register_highlight_tags(
+        &tag_table,
+        &app_state.settings.borrow().theme,
+        style_mgr.is_dark(),
+    );
+
     let buffer = gtk4::TextBuffer::builder()
         .tag_table(&tag_table)
         .build();
@@ -151,6 +150,19 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
         .bottom_margin(14)
         .build();
 
+    text_view.add_css_class("editor-view");
+
+    // CssProvider для стилизации темы редактора (фон и цвет курсора/текста)
+    let editor_theme_css_provider = gtk4::CssProvider::new();
+    if let Some(display) = gtk4::gdk::Display::default() {
+        gtk4::style_context_add_provider_for_display(
+            &display,
+            &editor_theme_css_provider,
+            gtk4::STYLE_PROVIDER_PRIORITY_USER,
+        );
+    }
+    apply_editor_theme_css(&editor_theme_css_provider, &app_state.settings.borrow().theme, style_mgr.is_dark());
+
     let editor_scroll = gtk4::ScrolledWindow::builder()
         .child(&text_view)
         .hexpand(true)
@@ -162,7 +174,6 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     // --- 4. Рабочая область: Предпросмотр WebKitGTK ---
     let web_view = webkit6::WebView::new();
 
-    // Разрешаем загрузку локальных файлов (картинки, шрифты и svg относительно открытого документа)
     if let Some(web_settings) = webkit6::prelude::WebViewExt::settings(&web_view) {
         web_settings.set_allow_file_access_from_file_urls(true);
         web_settings.set_allow_universal_access_from_file_urls(true);
@@ -178,7 +189,7 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     root_box.append(&view_stack);
     window.set_content(Some(&root_box));
 
-    // Применяем семейство и размер шрифта редактора через TextTag и TextBuffer
+    // Применяем семейство и размер шрифта редактора
     apply_editor_font(
         &buffer,
         &editor_font_tag,
@@ -196,13 +207,13 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
                 &app_state.settings.borrow().editor_font_family,
                 app_state.settings.borrow().editor_font_size,
             );
+            highlighter::highlight_markdown_buffer(&buffer);
             *app_state.is_modified.borrow_mut() = false;
         }
     }
     update_window_title(&window, &app_state);
 
-    // Отслеживаем изменения в буфере текста, чтобы ставить индикатор `*` в заголовке
-    // и поддерживать применение тега шрифта ко всему вводимому тексту
+    // Отслеживаем изменения в буфере текста
     let state_clone = app_state.clone();
     let window_weak = window.downgrade();
     let font_tag_for_buffer = editor_font_tag.clone();
@@ -211,6 +222,7 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
         let start = buf.start_iter();
         let end = buf.end_iter();
         buf.apply_tag(&font_tag_for_buffer, &start, &end);
+        highlighter::highlight_markdown_buffer(buf);
         if let Some(win) = window_weak.upgrade() {
             update_window_title(&win, &state_clone);
         }
@@ -231,7 +243,6 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
             let font_size = app_state.settings.borrow().preview_font_size;
             let padding_percent = app_state.settings.borrow().preview_padding_percent;
 
-            // Вычисляем базовый URL директории текущего файла для загрузки относительных картинок и ресурсов
             let base_uri = app_state.current_file.borrow().as_ref().and_then(|path| {
                 path.parent().and_then(|parent| {
                     let canonical = parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf());
@@ -256,25 +267,71 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
         })
     };
 
-    // Логика переключения режимов (Редактор <-> Предпросмотр)
+    // При завершении загрузки предпросмотра восстанавливаем позицию прокрутки
+    let scroll_ratio_for_load = app_state.scroll_ratio.clone();
+    web_view.connect_load_changed(move |view, event| {
+        if event == webkit6::LoadEvent::Finished {
+            let ratio = *scroll_ratio_for_load.borrow();
+            let script = format!(
+                "window.scrollTo(0, (document.documentElement.scrollHeight - window.innerHeight) * {});",
+                ratio
+            );
+            view.evaluate_javascript(&script, None::<&str>, None::<&str>, gio::Cancellable::NONE, |_| {});
+        }
+    });
+
+    // Логика переключения режимов (Редактор <-> Предпросмотр) с сохранением позиции
     let refresh_for_switch = refresh_preview.clone();
     let view_stack_clone = view_stack.clone();
     let edit_btn_clone = edit_btn.clone();
     let preview_btn_clone = preview_btn.clone();
     let text_view_for_toggle = text_view.clone();
     let state_toggle = app_state.clone();
+    let editor_scroll_clone = editor_scroll.clone();
+    let web_view_clone = web_view.clone();
+
     let toggle_view = Rc::new(move |to_preview: bool| {
         *state_toggle.is_preview_active.borrow_mut() = to_preview;
         if to_preview {
-            // При переходе в просмотр — рендерим актуальный текст из буфера
+            // Запоминаем текущую относительную позицию редактора перед переходом в просмотр
+            let vadj = editor_scroll_clone.vadjustment();
+            let upper = vadj.upper() - vadj.page_size();
+            let ratio = if upper > 0.0 {
+                (vadj.value() / upper).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            *state_toggle.scroll_ratio.borrow_mut() = ratio;
+
             refresh_for_switch();
             view_stack_clone.set_visible_child_name("preview");
             preview_btn_clone.set_active(true);
         } else {
-            // При переходе в редактор — возвращаем фокус на поле ввода
+            // При переходе из предпросмотра в редактор считываем scroll-ratio из браузерного JS
+            let scroll_ratio_holder = state_toggle.scroll_ratio.clone();
+            let vadj = editor_scroll_clone.vadjustment();
+            let tv = text_view_for_toggle.clone();
+
+            web_view_clone.evaluate_javascript(
+                "var total = document.documentElement.scrollHeight - window.innerHeight; total > 0 ? (window.scrollY / total) : 0;",
+                None::<&str>,
+                None::<&str>,
+                gio::Cancellable::NONE,
+                move |result| {
+                    if let Ok(js_val) = result {
+                        let ratio = js_val.to_double().clamp(0.0, 1.0);
+                        *scroll_ratio_holder.borrow_mut() = ratio;
+                        let upper = vadj.upper() - vadj.page_size();
+                        if upper > 0.0 {
+                            vadj.set_value(ratio * upper);
+                        }
+                    }
+                    tv.grab_focus();
+                },
+            );
+
             view_stack_clone.set_visible_child_name("editor");
             edit_btn_clone.set_active(true);
-            text_view_for_toggle.grab_focus();
         }
     });
 
@@ -345,7 +402,7 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
         do_save_btn(false);
     });
 
-    // --- Обработчик открытия файла (с проверкой несохраненных изменений) ---
+    // --- Обработчик открытия файла ---
     let window_for_open = window.clone();
     let buffer_for_open = buffer.clone();
     let state_for_open = app_state.clone();
@@ -378,6 +435,7 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
                         let family = state.settings.borrow().editor_font_family.clone();
                         let size = state.settings.borrow().editor_font_size;
                         apply_editor_font(&buffer, &tag, &family, size);
+                        highlighter::highlight_markdown_buffer(&buffer);
                         *state.current_file.borrow_mut() = Some(path);
                         *state.is_modified.borrow_mut() = false;
                         update_window_title(&win, &state);
@@ -417,14 +475,31 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
         do_open_btn();
     });
 
-    // --- Обработчик закрытия окна (с предупреждением о несохраненных правках) ---
+    // --- Обработчик закрытия окна с сохранением геометрии (размеров и maximized) ---
     let state_for_close = app_state.clone();
     let do_save_for_close = do_save.clone();
     let is_force_closing = Rc::new(RefCell::new(false));
 
+    let save_window_geometry = {
+        let state = app_state.clone();
+        Rc::new(move |win: &adw::ApplicationWindow| {
+            let is_max = win.is_maximized();
+            state.settings.borrow_mut().window_maximized = is_max;
+            if !is_max {
+                let width = win.default_width();
+                let height = win.default_height();
+                state.settings.borrow_mut().window_width = width;
+                state.settings.borrow_mut().window_height = height;
+            }
+            state.settings.borrow().save();
+        })
+    };
+
     let force_closing_clone = is_force_closing.clone();
+    let geometry_saver = save_window_geometry.clone();
     window.connect_close_request(move |win| {
         if *force_closing_clone.borrow() {
+            geometry_saver(win);
             return glib::Propagation::Proceed;
         }
 
@@ -435,23 +510,28 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
             let flag_discard = force_closing_clone.clone();
             let flag_save = force_closing_clone.clone();
             let do_save = do_save_for_close.clone();
+            let geom_discard = geometry_saver.clone();
+            let geom_save = geometry_saver.clone();
 
             show_unsaved_changes_dialog(
                 win,
                 "Закрыть без сохранения?",
                 "В документе есть несохраненные изменения. Закрытие приведет к их потере.",
                 move || {
+                    geom_discard(&win_for_discard);
                     *flag_discard.borrow_mut() = true;
                     win_for_discard.close();
                 },
                 move || {
                     do_save(false);
+                    geom_save(&win_for_save);
                     *flag_save.borrow_mut() = true;
                     win_for_save.close();
                 },
             );
             glib::Propagation::Stop
         } else {
+            geometry_saver(win);
             glib::Propagation::Proceed
         }
     });
@@ -459,7 +539,6 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     // --- Регистрация действий окна (GAction) для меню и шорткатов ---
     let actions = gio::SimpleActionGroup::new();
 
-    // Действие win.save_as
     let do_save_as = do_save.clone();
     let save_as_action = gio::SimpleAction::new("save_as", None);
     save_as_action.connect_activate(move |_, _| {
@@ -467,7 +546,6 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     });
     actions.add_action(&save_as_action);
 
-    // Действие win.save
     let do_save_shortcut = do_save.clone();
     let save_action = gio::SimpleAction::new("save", None);
     save_action.connect_activate(move |_, _| {
@@ -475,7 +553,6 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     });
     actions.add_action(&save_action);
 
-    // Действие win.open
     let do_open_action = do_open_dialog.clone();
     let open_action = gio::SimpleAction::new("open", None);
     open_action.connect_activate(move |_, _| {
@@ -483,7 +560,6 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     });
     actions.add_action(&open_action);
 
-    // Действие win.close (Ctrl+Q / Ctrl+F4)
     let win_for_close_action = window.clone();
     let close_action = gio::SimpleAction::new("close", None);
     close_action.connect_activate(move |_, _| {
@@ -491,7 +567,6 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     });
     actions.add_action(&close_action);
 
-    // Действие win.toggle_preview (Ctrl+Tab)
     let toggle_state = app_state.clone();
     let toggle_view_shortcut = toggle_view.clone();
     let preview_action = gio::SimpleAction::new("toggle_preview", None);
@@ -501,7 +576,6 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     });
     actions.add_action(&preview_action);
 
-    // Действие win.find (Ctrl+F)
     let search_bar_clone = search_bar.clone();
     let search_entry_clone = search_entry.clone();
     let find_action = gio::SimpleAction::new("find", None);
@@ -514,19 +588,27 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     });
     actions.add_action(&find_action);
 
-    // Действие win.preferences
     let window_for_pref = window.clone();
     let buffer_for_pref = buffer.clone();
     let tag_for_pref = editor_font_tag.clone();
+    let tag_table_for_pref = tag_table.clone();
+    let css_provider_for_pref = editor_theme_css_provider.clone();
     let state_for_pref = app_state.clone();
     let refresh_pref = refresh_preview.clone();
     let pref_action = gio::SimpleAction::new("preferences", None);
     pref_action.connect_activate(move |_, _| {
-        show_preferences_dialog(&window_for_pref, &state_for_pref, &buffer_for_pref, &tag_for_pref, refresh_pref.clone());
+        show_preferences_dialog(
+            &window_for_pref,
+            &state_for_pref,
+            &buffer_for_pref,
+            &tag_for_pref,
+            &tag_table_for_pref,
+            &css_provider_for_pref,
+            refresh_pref.clone(),
+        );
     });
     actions.add_action(&pref_action);
 
-    // Действие win.about
     let window_for_about = window.clone();
     let about_action = gio::SimpleAction::new("about", None);
     about_action.connect_activate(move |_, _| {
@@ -536,23 +618,47 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
 
     window.insert_action_group("win", Some(&actions));
 
-    // Настраиваем логику поиска подстроки
     setup_search(&search_entry, &text_view);
 
-    // Настраиваем глобальные горячие клавиши (акселераторы)
     app.set_accels_for_action("win.save", &["<Control>s"]);
     app.set_accels_for_action("win.save_as", &["<Control><Shift>s"]);
     app.set_accels_for_action("win.open", &["<Control>o"]);
-    // Переключение между вкладками Редактор и Просмотр по Ctrl+Tab / Ctrl+Shift+Tab
     app.set_accels_for_action("win.toggle_preview", &["<Control>Tab", "<Control>ISO_Left_Tab"]);
     app.set_accels_for_action("win.find", &["<Control>f"]);
-    // Закрытие окна / выход по Ctrl+Q или Ctrl+F4
     app.set_accels_for_action("win.close", &["<Control>q", "<Control>F4"]);
 
     window
 }
 
-/// Отображает модальный диалог подтверждения при наличии несохраненных изменений (`adw::MessageDialog`).
+/// Применяет CSS-стилизацию к текстовому редактору для поддержки выбранной цветовой темы
+fn apply_editor_theme_css(provider: &gtk4::CssProvider, theme: &str, is_dark: bool) {
+    let (bg, fg, cursor_color) = match theme {
+        "dracula" => ("#282a36", "#f8f8f2", "#bd93f9"),
+        "kimbie_dark" => ("#221a0f", "#d3af86", "#f79a32"),
+        "solarized_dark" => ("#002b36", "#839496", "#268bd2"),
+        "solarized_light" => ("#fdf6e3", "#657b83", "#268bd2"),
+        "light" => ("#ffffff", "#1f2328", "#0969da"),
+        "dark" => ("#0d1117", "#e6edf3", "#4493f8"),
+        _ => {
+            if is_dark {
+                ("#0d1117", "#e6edf3", "#4493f8")
+            } else {
+                ("#ffffff", "#1f2328", "#0969da")
+            }
+        }
+    };
+
+    let css = format!(
+        ".editor-view, textview.editor-view, textview.editor-view text {{
+            background-color: {bg} !important;
+            color: {fg} !important;
+            caret-color: {cursor_color} !important;
+        }}"
+    );
+    provider.load_from_data(&css);
+}
+
+/// Отображает модальный диалог подтверждения при наличии несохраненных изменений
 fn show_unsaved_changes_dialog<F1, F2>(
     parent: &adw::ApplicationWindow,
     heading: &str,
@@ -613,7 +719,7 @@ fn update_window_title(window: &adw::ApplicationWindow, state: &AppState) {
     window.set_title(Some(&format!("{modified_marker}{filename} — rmd-view")));
 }
 
-/// Применяет выбранную цветовую схему (Adwaita ColorScheme).
+/// Применяет выбранную цветовую схему к Adwaita StyleManager
 fn apply_color_scheme(theme: &str) {
     let style_mgr = adw::StyleManager::default();
     match theme {
@@ -627,10 +733,7 @@ fn apply_color_scheme(theme: &str) {
     }
 }
 
-/// Применяет гарнитуру и размер шрифта к текстовому буферу редактора через Pango Font Description.
-///
-/// Это нативный и 100% надежный механизм в GTK: вместо CSS, который может конфликтовать со стилями
-/// темы Adwaita, мы задаем шрифт на уровне GtkTextTag, который Pango гарантированно отображает.
+/// Применяет гарнитуру и размер шрифта к текстовому буферу редактора
 fn apply_editor_font(buffer: &gtk4::TextBuffer, tag: &gtk4::TextTag, font_family: &str, font_size: u32) {
     let mut desc = pango::FontDescription::new();
     desc.set_family(font_family);
@@ -643,7 +746,7 @@ fn apply_editor_font(buffer: &gtk4::TextBuffer, tag: &gtk4::TextTag, font_family
     buffer.apply_tag(tag, &start, &end);
 }
 
-/// Настраивает механизм поиска по текстовому буферу `GtkTextBuffer`.
+/// Настраивает механизм поиска по текстовому буферу `GtkTextBuffer`
 fn setup_search(entry: &gtk4::SearchEntry, text_view: &gtk4::TextView) {
     let buffer = text_view.buffer();
     let text_view = text_view.clone();
@@ -686,12 +789,14 @@ fn setup_search(entry: &gtk4::SearchEntry, text_view: &gtk4::TextView) {
     });
 }
 
-/// Отображает модальное окно настроек (`adw::PreferencesWindow`) в стиле GNOME.
+/// Отображает модальное окно настроек (`adw::PreferencesWindow`)
 fn show_preferences_dialog(
     parent: &adw::ApplicationWindow,
     state: &AppState,
     editor_buffer: &gtk4::TextBuffer,
     editor_font_tag: &gtk4::TextTag,
+    tag_table: &gtk4::TextTagTable,
+    editor_theme_provider: &gtk4::CssProvider,
     refresh_preview: Rc<dyn Fn()>,
 ) {
     let window = adw::PreferencesWindow::builder()
@@ -706,7 +811,7 @@ fn show_preferences_dialog(
     // Секция 1: Цветовая схема
     let appearance_group = adw::PreferencesGroup::builder()
         .title("Оформление")
-        .description("Выбор цветовой темы приложения и предпросмотра")
+        .description("Выбор цветовой темы приложения, редактора и предпросмотра")
         .build();
 
     let theme_names = [
@@ -735,12 +840,22 @@ fn show_preferences_dialog(
 
     let state_theme = state.clone();
     let refresh_for_theme = refresh_preview.clone();
+    let tag_table_theme = tag_table.clone();
+    let theme_provider_clone = editor_theme_provider.clone();
+    let editor_buf_theme = editor_buffer.clone();
+
     theme_row.connect_selected_notify(move |row| {
         let idx = row.selected() as usize;
         if let Some(&(_, selected_code)) = theme_names.get(idx) {
             state_theme.settings.borrow_mut().theme = selected_code.to_string();
             state_theme.settings.borrow().save();
             apply_color_scheme(selected_code);
+
+            let style_mgr = adw::StyleManager::default();
+            apply_editor_theme_css(&theme_provider_clone, selected_code, style_mgr.is_dark());
+            highlighter::update_highlight_colors(&tag_table_theme, selected_code, style_mgr.is_dark());
+            highlighter::highlight_markdown_buffer(&editor_buf_theme);
+
             refresh_for_theme();
         }
     });
@@ -784,7 +899,6 @@ fn show_preferences_dialog(
         .description("Настройка гарнитуры и размера текста")
         .build();
 
-    // Список популярных моноширинных и пропорциональных шрифтов в Linux
     let font_options = [
         "Monospace",
         "JetBrains Mono",
@@ -824,7 +938,6 @@ fn show_preferences_dialog(
     });
     fonts_group.add(&font_family_row);
 
-    // Размер шрифта текстового редактора
     let editor_spin = adw::SpinRow::builder()
         .title("Размер шрифта редактора")
         .adjustment(&gtk4::Adjustment::new(
@@ -849,7 +962,6 @@ fn show_preferences_dialog(
     });
     fonts_group.add(&editor_spin);
 
-    // Размер шрифта предпросмотра Markdown
     let preview_spin = adw::SpinRow::builder()
         .title("Размер шрифта предпросмотра")
         .adjustment(&gtk4::Adjustment::new(

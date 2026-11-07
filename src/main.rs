@@ -7,7 +7,7 @@
 use adw::prelude::*;
 use std::env;
 use std::path::PathBuf;
-
+mod highlighter;
 mod renderer;
 mod settings;
 mod window;

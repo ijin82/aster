@@ -21,6 +21,15 @@ pub struct AppSettings {
     /// Боковые отступы (padding) блока предпросмотра в процентах (по умолчанию 5%).
     #[serde(default = "default_preview_padding")]
     pub preview_padding_percent: u32,
+    /// Было ли окно развернуто на весь экран (maximized).
+    #[serde(default)]
+    pub window_maximized: bool,
+    /// Сохраненная ширина окна.
+    #[serde(default = "default_window_width")]
+    pub window_width: i32,
+    /// Сохраненная высота окна.
+    #[serde(default = "default_window_height")]
+    pub window_height: i32,
 }
 
 fn default_editor_font_family() -> String {
@@ -31,6 +40,14 @@ fn default_preview_padding() -> u32 {
     5
 }
 
+fn default_window_width() -> i32 {
+    960
+}
+
+fn default_window_height() -> i32 {
+    720
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -39,6 +56,9 @@ impl Default for AppSettings {
             editor_font_size: 14,
             preview_font_size: 16,
             preview_padding_percent: 5,
+            window_maximized: false,
+            window_width: default_window_width(),
+            window_height: default_window_height(),
         }
     }
 }
