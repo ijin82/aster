@@ -349,13 +349,17 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     web_view.connect_load_changed(move |_, load_event| {
         if load_event == webkit6::LoadEvent::Finished {
             let ratio = *state_for_load.scroll_ratio.borrow();
+            // Позиционируем документ в предпросмотре так, чтобы точка с долей `ratio`
+            // оказалась ровно по центру видимой области окна WebKit (как и в редакторе).
             let script = format!(
                 "(function() {{
-                    var targetRatio = {ratio};
-                    var total = document.documentElement.scrollHeight - window.innerHeight;
-                    if (total > 0) {{
-                        var targetY = total * targetRatio;
-                        window.scrollTo(0, targetY);
+                    var total = document.documentElement.scrollHeight;
+                    var winH = window.innerHeight;
+                    var maxScroll = total - winH;
+                    if (total > 0 && maxScroll > 0) {{
+                        var targetMidY = total * {ratio};
+                        var targetScrollY = targetMidY - (winH / 2.0);
+                        window.scrollTo(0, Math.max(0, Math.min(maxScroll, targetScrollY)));
                     }}
                 }})();"
             );
@@ -391,7 +395,8 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
             let vadj = editor_scroll_clone.vadjustment();
             let upper = vadj.upper();
             let page_size = vadj.page_size();
-            let max_scroll = upper - page_size;
+            let visible_top = vadj.value();
+            let visible_bottom = visible_top + page_size;
 
             let buffer = text_view_clone.buffer();
             let insert_mark = buffer.get_insert();
@@ -399,14 +404,16 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
             let (cursor_y, cursor_height) = text_view_clone.line_yrange(&cursor_iter);
             let cursor_mid_y = (cursor_y + cursor_height / 2) as f64;
 
-            let visible_top = vadj.value();
-            let visible_bottom = visible_top + page_size;
+            // Если курсор находится в пределах текущего видимого экрана, ориентируемся на строку с курсором;
+            // в противном случае ориентируемся на центр видимой области редактора.
+            let focal_y = if cursor_mid_y >= visible_top && cursor_mid_y <= visible_bottom {
+                cursor_mid_y
+            } else {
+                visible_top + page_size / 2.0
+            };
 
-            let target_ratio = if cursor_mid_y >= visible_top && cursor_mid_y <= visible_bottom && upper > 0.0 {
-                (cursor_mid_y / upper).clamp(0.0, 1.0)
-            } else if max_scroll > 0.0 {
-                let center_y = visible_top + page_size / 2.0;
-                (center_y / upper).clamp(0.0, 1.0)
+            let target_ratio = if upper > 0.0 {
+                (focal_y / upper).clamp(0.0, 1.0)
             } else {
                 0.0
             };
