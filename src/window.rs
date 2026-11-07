@@ -23,10 +23,8 @@ pub struct AppState {
     pub settings: Rc<RefCell<AppSettings>>,
     /// Активен ли сейчас режим предпросмотра (true) или редактор (false).
     pub is_preview_active: Rc<RefCell<bool>>,
-    /// Запоминаем долю прокрутки (0.0 .. 1.0) для синхронизации позиции между режимами
-    pub scroll_ratio: Rc<RefCell<f64>>,
-    /// Текст строки под курсором (или в центре видимой области) для точного позиционирования в предпросмотре
-    pub focal_line_text: Rc<RefCell<String>>,
+    /// Целевой номер строки Markdown-исходника (0-based) для идеальной синхронизации позиции между редактором и предпросмотром
+    pub target_line: Rc<RefCell<Option<usize>>>,
 }
 
 /// Перечисляет все моноширинные семейства шрифтов, доступные в системе через Pango Context.
@@ -63,8 +61,7 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
         is_modified: Rc::new(RefCell::new(false)),
         settings: Rc::new(RefCell::new(settings.clone())),
         is_preview_active: Rc::new(RefCell::new(false)),
-        scroll_ratio: Rc::new(RefCell::new(0.0)),
-        focal_line_text: Rc::new(RefCell::new(String::new())),
+        target_line: Rc::new(RefCell::new(None)),
     };
 
     // Применяем цветовую схему из настроек
@@ -333,6 +330,7 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
             })
         });
 
+        let target_line = *state_for_refresh.target_line.borrow();
         let settings = state_for_refresh.settings.borrow();
         let html = renderer::render_markdown_to_html(
             &markdown_text,
@@ -341,6 +339,7 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
             settings.preview_font_size,
             settings.preview_padding_percent,
             base_uri.as_deref(),
+            target_line,
         );
 
         web_view_for_refresh.load_html(&html, base_uri.as_deref());
@@ -350,76 +349,23 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     let web_view_for_load = web_view.clone();
     let state_for_load = app_state.clone();
     web_view.connect_load_changed(move |_, load_event| {
+        // При завершении загрузки документа повторно вызываем позиционирование на целевой строке.
+        // Это служит надежной страховкой на случай, если движок WebKit выполнил внутренний сброс
+        // прокрутки в (0,0) после первоначального разбора HTML.
         if load_event == webkit6::LoadEvent::Finished {
-            let ratio = *state_for_load.scroll_ratio.borrow();
-            let focal_text = state_for_load.focal_line_text.borrow().clone();
-            let focal_json = serde_json::to_string(&focal_text).unwrap_or_else(|_| "\"\"".to_string());
-
-            // Интеллектуальный поиск элемента в DOM WebKit:
-            // 1. Сначала пытаемся найти точный элемент DOM, содержащий ключевой текст фокусной строки,
-            //    и плавно центрируем его на экране с помощью scrollIntoView({block: 'center'}).
-            //    Это гарантирует, что строка, которую пользователь редактировал, оказывается на экране
-            //    независимо от разницы в размерах шрифтов, разметке таблиц, отступах и т.д.
-            // 2. Если строка пустая или не найдена в DOM (например, специфические служебные символы),
-            //    используется пропорциональное позиционирование по центру видимой области.
-            let script = format!(
-                r#"(function() {{
-                    var focalText = {focal_json};
-                    var targetRatio = {ratio};
-
-                    function cleanText(s) {{
-                        return s.replace(/[^\p{{L}}\p{{N}}]+/gu, ' ').trim().toLowerCase();
-                    }}
-
-                    var found = false;
-                    var cleanedFocal = cleanText(focalText);
-
-                    if (cleanedFocal.length >= 3) {{
-                        var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
-                        var node;
-                        var candidates = [];
-                        while (node = walker.nextNode()) {{
-                            var text = node.textContent.trim();
-                            if (text.length > 0) {{
-                                candidates.push(node);
-                            }}
-                        }}
-
-                        // Ищем наиболее подходящее текстовое совпадение
-                        for (var i = 0; i < candidates.length; i++) {{
-                            var cNode = cleanText(candidates[i].textContent);
-                            if (cNode.length >= 3 && (cNode.includes(cleanedFocal) || cleanedFocal.includes(cNode))) {{
-                                var el = candidates[i].parentElement;
-                                if (el) {{
-                                    el.scrollIntoView({{ block: 'center', inline: 'nearest', behavior: 'instant' }});
-                                    found = true;
-                                    break;
-                                }}
-                            }}
-                        }}
-                    }}
-
-                    // Запасной вариант: центрирование по пропорциональной доле документа
-                    if (!found) {{
-                        var total = document.documentElement.scrollHeight;
-                        var winH = window.innerHeight;
-                        var maxScroll = total - winH;
-                        if (total > 0 && maxScroll > 0) {{
-                            var targetMidY = total * targetRatio;
-                            var targetScrollY = targetMidY - (winH / 2.0);
-                            window.scrollTo(0, Math.max(0, Math.min(maxScroll, targetScrollY)));
-                        }}
-                    }}
-                }})();"#
-            );
-
-            web_view_for_load.evaluate_javascript(
-                &script,
-                None,
-                None,
-                Option::<&gio::Cancellable>::None,
-                |_| {},
-            );
+            if let Some(line) = *state_for_load.target_line.borrow() {
+                let script = format!(
+                    "if (typeof window.__scrollToSourceLine === 'function') {{ window.__scrollToSourceLine({}); }}",
+                    line
+                );
+                web_view_for_load.evaluate_javascript(
+                    &script,
+                    None,
+                    None,
+                    Option::<&gio::Cancellable>::None,
+                    |_| {},
+                );
+            }
         }
     });
 
@@ -442,6 +388,11 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
         let preview_btn_clone = preview_btn_clone.clone();
 
         Rc::new(move || {
+            // Предотвращаем повторный / рекурсивный запуск, если предпросмотр уже активен
+            if *state_for_toggle.is_preview_active.borrow() {
+                return;
+            }
+
             let vadj = editor_scroll_clone.vadjustment();
             let upper = vadj.upper();
             let page_size = vadj.page_size();
@@ -451,38 +402,28 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
             let buffer = text_view_clone.buffer();
             let insert_mark = buffer.get_insert();
             let cursor_iter = buffer.iter_at_mark(&insert_mark);
+            let cursor_line = cursor_iter.line() as usize;
+
             let (cursor_y, cursor_height) = text_view_clone.line_yrange(&cursor_iter);
             let cursor_mid_y = (cursor_y + cursor_height / 2) as f64;
 
-            // Определяем целевую итерацию для поиска текста:
-            // Если курсор находится в пределах текущего видимого экрана, ориентируемся на строку с курсором;
-            // в противном случае ориентируемся на строку в центре видимой области редактора.
-            let (target_iter, focal_y) = if cursor_mid_y >= visible_top && cursor_mid_y <= visible_bottom {
-                (cursor_iter, cursor_mid_y)
-            } else {
+            // Определяем целевую строку в исходнике:
+            // Если курсор находится в видимой области (или документ только открыт),
+            // строго позиционируемся по строке курсора, как ожидает пользователь.
+            // Если курсор далеко за пределами видимого экрана, берем строку в центре экрана.
+            let target_line = if cursor_mid_y >= visible_top && cursor_mid_y <= visible_bottom && cursor_height > 0 {
+                cursor_line
+            } else if upper > 0.0 && page_size > 0.0 {
                 let center_y = (visible_top + page_size / 2.0).clamp(0.0, upper);
                 let (it, _) = text_view_clone.line_at_y(center_y as i32);
-                (it, center_y)
-            };
-
-            // Извлекаем текст строки для точной привязки в HTML
-            let mut line_start = target_iter.clone();
-            line_start.set_line_offset(0);
-            let mut line_end = line_start.clone();
-            line_end.forward_to_line_end();
-            let line_text = buffer.text(&line_start, &line_end, false);
-
-            *state_for_toggle.focal_line_text.borrow_mut() = line_text.to_string();
-
-            let target_ratio = if upper > 0.0 {
-                (focal_y / upper).clamp(0.0, 1.0)
+                it.line() as usize
             } else {
-                0.0
+                cursor_line
             };
 
-            *state_for_toggle.scroll_ratio.borrow_mut() = target_ratio;
-
+            *state_for_toggle.target_line.borrow_mut() = Some(target_line);
             *state_for_toggle.is_preview_active.borrow_mut() = true;
+
             refresh_preview_for_toggle();
             view_stack_clone.set_visible_child_name("preview");
             preview_btn_clone.set_active(true);
@@ -492,21 +433,19 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     let switch_to_editor = {
         let view_stack_clone = view_stack_clone.clone();
         let state_for_toggle = state_for_toggle.clone();
-        let editor_scroll_clone = editor_scroll_clone.clone();
+        let text_view_clone = text_view_clone.clone();
         let edit_btn_clone = edit_btn_clone.clone();
         let web_view_for_sync = web_view_for_sync.clone();
 
         Rc::new(move || {
-            // Запрашиваем положение центра видимой области документа в WebKit (0.0 .. 1.0)
-            let script = "(function() {
-                var total = document.documentElement.scrollHeight;
-                if (total > 0) {
-                    var midY = window.scrollY + (window.innerHeight / 2.0);
-                    return midY / total;
-                }
-                return 0.0;
-            })();";
-            let editor_scroll_sync = editor_scroll_clone.clone();
+            // Предотвращаем повторный / рекурсивный запуск, если редактор уже активен
+            if !*state_for_toggle.is_preview_active.borrow() {
+                return;
+            }
+
+            // Запрашиваем номер строки Markdown-исходника, находящейся в центре текущей области просмотра WebKit
+            let script = "if (typeof window.__getCenterSourceLine === 'function') { window.__getCenterSourceLine(); } else { -1; }";
+            let text_view_sync = text_view_clone.clone();
 
             web_view_for_sync.evaluate_javascript(
                 script,
@@ -515,15 +454,13 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
                 Option::<&gio::Cancellable>::None,
                 move |result| {
                     if let Ok(js_val) = result {
-                        let center_ratio = js_val.to_double().clamp(0.0, 1.0);
-                        let vadj = editor_scroll_sync.vadjustment();
-                        let upper = vadj.upper();
-                        let page_size = vadj.page_size();
-                        let max_scroll = upper - page_size;
-                        if upper > 0.0 && max_scroll > 0.0 {
-                            // Позиционируем редактор так, чтобы соответствующая точка находилась по центру видимой области
-                            let target_top = (upper * center_ratio) - (page_size / 2.0);
-                            vadj.set_value(target_top.clamp(0.0, max_scroll));
+                        let line = js_val.to_double() as i32;
+                        if line >= 0 {
+                            let buffer = text_view_sync.buffer();
+                            if let Some(mut iter) = buffer.iter_at_line(line) {
+                                buffer.place_cursor(&iter);
+                                text_view_sync.scroll_to_iter(&mut iter, 0.0, true, 0.0, 0.5);
+                            }
                         }
                     }
                 },
