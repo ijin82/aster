@@ -8,7 +8,8 @@ use std::path::PathBuf;
 /// Значения по умолчанию задаются через трейт `Default`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
-    /// Цветовая тема приложения: "system" (системная), "light" (светлая) или "dark" (тёмная).
+    /// Цветовая тема приложения:
+    /// "system", "light", "dark", "dracula", "kimbie_dark", "solarized_dark", "solarized_light".
     pub theme: String,
     /// Семейство шрифта редактора (например, "Monospace", "Fira Code", "JetBrains Mono").
     #[serde(default = "default_editor_font_family")]
@@ -17,10 +18,17 @@ pub struct AppSettings {
     pub editor_font_size: u32,
     /// Размер базового шрифта в окне предпросмотра Markdown в пикселях (px).
     pub preview_font_size: u32,
+    /// Боковые отступы (padding) блока предпросмотра в процентах (по умолчанию 5%).
+    #[serde(default = "default_preview_padding")]
+    pub preview_padding_percent: u32,
 }
 
 fn default_editor_font_family() -> String {
     "Monospace".to_string()
+}
+
+fn default_preview_padding() -> u32 {
+    5
 }
 
 impl Default for AppSettings {
@@ -30,6 +38,7 @@ impl Default for AppSettings {
             editor_font_family: default_editor_font_family(),
             editor_font_size: 14,
             preview_font_size: 16,
+            preview_padding_percent: 5,
         }
     }
 }

@@ -227,7 +227,9 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
             let text = buffer.text(&start, &end, false);
             let style_mgr = adw::StyleManager::default();
             let is_dark = style_mgr.is_dark();
+            let theme = app_state.settings.borrow().theme.clone();
             let font_size = app_state.settings.borrow().preview_font_size;
+            let padding_percent = app_state.settings.borrow().preview_padding_percent;
 
             // Вычисляем базовый URL директории текущего файла для загрузки относительных картинок и ресурсов
             let base_uri = app_state.current_file.borrow().as_ref().and_then(|path| {
@@ -243,8 +245,10 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
 
             let html = renderer::render_markdown_to_html(
                 text.as_str(),
+                &theme,
                 is_dark,
                 font_size,
+                padding_percent,
                 base_uri.as_deref(),
             );
 
@@ -613,8 +617,12 @@ fn update_window_title(window: &adw::ApplicationWindow, state: &AppState) {
 fn apply_color_scheme(theme: &str) {
     let style_mgr = adw::StyleManager::default();
     match theme {
-        "dark" => style_mgr.set_color_scheme(adw::ColorScheme::ForceDark),
-        "light" => style_mgr.set_color_scheme(adw::ColorScheme::ForceLight),
+        "dark" | "dracula" | "kimbie_dark" | "solarized_dark" => {
+            style_mgr.set_color_scheme(adw::ColorScheme::ForceDark)
+        }
+        "light" | "solarized_light" => {
+            style_mgr.set_color_scheme(adw::ColorScheme::ForceLight)
+        }
         _ => style_mgr.set_color_scheme(adw::ColorScheme::Default),
     }
 }
@@ -698,43 +706,79 @@ fn show_preferences_dialog(
     // Секция 1: Цветовая схема
     let appearance_group = adw::PreferencesGroup::builder()
         .title("Оформление")
-        .description("Выбор цветовой темы приложения")
+        .description("Выбор цветовой темы приложения и предпросмотра")
         .build();
+
+    let theme_names = [
+        ("Системная", "system"),
+        ("Светлая (GitHub Light)", "light"),
+        ("Тёмная (GitHub Dark)", "dark"),
+        ("Dracula", "dracula"),
+        ("Kimbie Dark", "kimbie_dark"),
+        ("Solarized Dark", "solarized_dark"),
+        ("Solarized Light", "solarized_light"),
+    ];
+
+    let theme_labels: Vec<&str> = theme_names.iter().map(|(label, _)| *label).collect();
 
     let theme_row = adw::ComboRow::builder()
         .title("Цветовая схема")
-        .model(&gtk4::StringList::new(&[
-            "Системная",
-            "Светлая",
-            "Тёмная",
-        ]))
+        .model(&gtk4::StringList::new(&theme_labels))
         .build();
 
     let current_theme = state.settings.borrow().theme.clone();
-    theme_row.set_selected(match current_theme.as_str() {
-        "light" => 1,
-        "dark" => 2,
-        _ => 0,
-    });
+    let initial_theme_idx = theme_names
+        .iter()
+        .position(|(_, code)| *code == current_theme)
+        .unwrap_or(0);
+    theme_row.set_selected(initial_theme_idx as u32);
 
     let state_theme = state.clone();
     let refresh_for_theme = refresh_preview.clone();
     theme_row.connect_selected_notify(move |row| {
-        let selected_theme = match row.selected() {
-            1 => "light",
-            2 => "dark",
-            _ => "system",
-        };
-        state_theme.settings.borrow_mut().theme = selected_theme.to_string();
-        state_theme.settings.borrow().save();
-        apply_color_scheme(selected_theme);
-        refresh_for_theme();
+        let idx = row.selected() as usize;
+        if let Some(&(_, selected_code)) = theme_names.get(idx) {
+            state_theme.settings.borrow_mut().theme = selected_code.to_string();
+            state_theme.settings.borrow().save();
+            apply_color_scheme(selected_code);
+            refresh_for_theme();
+        }
     });
 
     appearance_group.add(&theme_row);
     page.add(&appearance_group);
 
-    // Секция 2: Шрифты редактора и предпросмотра
+    // Секция 2: Разметка и отступы предпросмотра
+    let layout_group = adw::PreferencesGroup::builder()
+        .title("Разметка предпросмотра")
+        .description("Настройка боковых полей документа")
+        .build();
+
+    let padding_spin = adw::SpinRow::builder()
+        .title("Боковые поля (% от ширины)")
+        .subtitle("По умолчанию 5% с каждой стороны")
+        .adjustment(&gtk4::Adjustment::new(
+            state.settings.borrow().preview_padding_percent as f64,
+            0.0,
+            30.0,
+            1.0,
+            5.0,
+            0.0,
+        ))
+        .build();
+
+    let state_padding = state.clone();
+    let refresh_for_padding = refresh_preview.clone();
+    padding_spin.connect_changed(move |row| {
+        let val = row.value() as u32;
+        state_padding.settings.borrow_mut().preview_padding_percent = val;
+        state_padding.settings.borrow().save();
+        refresh_for_padding();
+    });
+    layout_group.add(&padding_spin);
+    page.add(&layout_group);
+
+    // Секция 3: Шрифты редактора и предпросмотра
     let fonts_group = adw::PreferencesGroup::builder()
         .title("Шрифты")
         .description("Настройка гарнитуры и размера текста")
