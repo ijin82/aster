@@ -64,6 +64,16 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
         target_line: Rc::new(RefCell::new(None)),
     };
 
+    // Отключаем системный звуковой сигнал (error bell) при достижении границ документа
+    // в глобальных настройках GTK и для текущего дисплея GDK.
+    if let Some(settings) = gtk4::Settings::default() {
+        settings.set_gtk_error_bell(false);
+    }
+    if let Some(display) = gtk4::gdk::Display::default() {
+        let settings = gtk4::Settings::for_display(&display);
+        settings.set_gtk_error_bell(false);
+    }
+
     // Применяем цветовую схему из настроек
     apply_color_scheme(&app_state.settings.borrow().theme);
 
@@ -182,8 +192,8 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
 
     text_view.add_css_class("editor-view");
 
-    // Обработка клавиш Tab и Shift+Tab для отступа и выравнивания строк
-    setup_editor_tab_handling(&text_view);
+    // Обработка клавиш в редакторе (Tab/Shift+Tab для отступов, подавление звука границ)
+    setup_editor_key_handling(&text_view);
 
     // CssProvider для стилизации темы редактора (фон и цвет курсора/текста)
     let editor_theme_css_provider = gtk4::CssProvider::new();
@@ -285,7 +295,14 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
                 app_state.settings.borrow().editor_font_size,
             );
             highlighter::highlight_markdown_buffer(&buffer);
+            // Восстанавливаем сохраненную позицию курсора (или устанавливаем в начало (0, 0)).
+            // Это решает проблему «замирания» при старте и прокрутки в конец документа.
+            apply_restored_cursor_position(&app_state, &buffer, path);
+            schedule_cursor_scroll(&text_view);
         }
+    } else {
+        // Для нового пустого документа позиционируем курсор в начале буфера (0, 0)
+        buffer.place_cursor(&buffer.start_iter());
     }
 
     // Первоначальное обновление заголовка окна и кнопки «Сохранить»
@@ -554,6 +571,7 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     let state_for_open = app_state.clone();
     let do_save_for_open = do_save.clone();
     let font_tag_for_open = editor_font_tag.clone();
+    let text_view_for_open = text_view.clone();
     let trigger_file_open = Rc::new(move || {
         let lang = Language::from_code(&state_for_open.settings.borrow().language);
         let file_dialog = gtk4::FileDialog::builder()
@@ -574,19 +592,28 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
         let win = window_for_open.clone();
         let btn = save_btn_for_open.clone();
         let tag = font_tag_for_open.clone();
+        let text_view_open = text_view_for_open.clone();
 
         file_dialog.open(Some(&window_for_open), gio::Cancellable::NONE, move |res| {
             if let Ok(file) = res {
                 if let Some(path) = file.path() {
+                    // Сохраняем позицию курсора текущего закрываемого документа перед загрузкой нового
+                    save_current_file_cursor_position(&state, &buffer);
+                    state.settings.borrow().save();
+
                     if let Ok(content) = std::fs::read_to_string(&path) {
                         buffer.set_text(&content);
                         let family = state.settings.borrow().editor_font_family.clone();
                         let size = state.settings.borrow().editor_font_size;
                         apply_editor_font(&buffer, &tag, &family, size);
                         highlighter::highlight_markdown_buffer(&buffer);
-                        *state.current_file.borrow_mut() = Some(path);
+                        *state.current_file.borrow_mut() = Some(path.clone());
                         *state.is_modified.borrow_mut() = false;
                         update_window_title_and_save_status(&win, &btn, &state);
+
+                        // Восстанавливаем позицию курсора для открытого документа и прокручиваем к ней
+                        apply_restored_cursor_position(&state, &buffer, &path);
+                        schedule_cursor_scroll(&text_view_open);
                     }
                 }
             }
@@ -625,14 +652,18 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
         do_open_btn();
     });
 
-    // --- Обработчик закрытия окна с сохранением геометрии (размеров и maximized) ---
+    // --- Обработчик закрытия окна с сохранением геометрии и позиции курсора ---
     let state_for_close = app_state.clone();
     let do_save_for_close = do_save.clone();
     let is_force_closing = Rc::new(RefCell::new(false));
 
+    let buffer_for_geometry = buffer.clone();
     let save_window_geometry = {
         let state = app_state.clone();
+        let buffer = buffer_for_geometry.clone();
         Rc::new(move |win: &adw::ApplicationWindow| {
+            // Сохраняем позицию курсора для текущего открытого файла
+            save_current_file_cursor_position(&state, &buffer);
             let is_max = win.is_maximized();
             state.settings.borrow_mut().window_maximized = is_max;
             if !is_max {
@@ -1276,21 +1307,105 @@ pub fn unindent_selection_or_cursor(buffer: &gtk4::TextBuffer) {
     buffer.end_user_action();
 }
 
-/// Настраивает обработку клавиш Tab и Shift+Tab в редакторе текста `GtkTextView`.
+/// Возвращает канонический путь к файлу для надежного поиска в словаре сохраненных позиций курсора.
 ///
-/// Контроллер `gtk4::EventControllerKey` настраивается в фазе `PropagationPhase::Capture`,
-/// чтобы перехватить нажатия клавиш до стандартного обработчика `GtkTextView`:
-/// - Если есть выделенный участок текста:
-///   - При нажатии `Tab` каждой строке, входящей в выделение, добавляется два пробела спереди.
-///   - При нажатии `Shift + Tab` у каждой строки, входящей в выделение, удаляется до двух пробелов с начала строки (если они есть).
-/// - Если текст не выделен:
-///   - `Tab` вставляет два пробела в позицию каретки.
-///   - `Shift + Tab` удаляет до двух пробелов с начала текущей строки, не приводя к потере фокуса виджетом.
-/// - Все изменения группируются через `buffer.begin_user_action()` и `buffer.end_user_action()`,
-///   что позволяет отменять и повторять многострочный отступ одним нажатием `Ctrl+Z` / `Ctrl+Shift+Z`.
-/// - Комбинации с `Control` или `Alt` (например, глобальный акселератор `Ctrl+Tab` для переключения режимов)
-///   не перехватываются и пропускаются дальше.
-fn setup_editor_tab_handling(text_view: &gtk4::TextView) {
+/// Канонизация приводит относительные пути и символические ссылки к единому абсолютному пути,
+/// благодаря чему файл, открытый через консоль (`./doc.md`) или через диалоговое окно (`/home/.../doc.md`),
+/// будет сопоставлен с одной и той же записью в настройках `AppSettings`.
+fn get_file_canonical_key(path: &std::path::Path) -> String {
+    std::fs::canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .to_string()
+}
+
+/// Сохраняет позицию курсора (номер строки и смещение символа) для текущего открытого файла в настройках.
+///
+/// В однопоточном GUI GTK позиция берется из встроенной метки вставки (`insert` mark) буфера.
+/// Настройки модифицируются через разделяемую мутабельность `state.settings.borrow_mut()`.
+/// Количество запоминаемых позиций ограничивается (максимум 200 файлов), чтобы избежать
+/// бесконечного разрастания JSON-файла конфигурации в XDG_CONFIG_HOME.
+fn save_current_file_cursor_position(state: &AppState, buffer: &gtk4::TextBuffer) {
+    if let Some(ref path) = *state.current_file.borrow() {
+        let insert_mark = buffer.get_insert();
+        let iter = buffer.iter_at_mark(&insert_mark);
+        let line = iter.line() as usize;
+        let col = iter.line_offset() as usize;
+        let key = get_file_canonical_key(path);
+
+        let mut settings = state.settings.borrow_mut();
+        if settings.file_cursor_positions.len() > 200 {
+            settings.file_cursor_positions.clear();
+        }
+        settings.file_cursor_positions.insert(key, (line, col));
+    }
+}
+
+/// Восстанавливает сохраненную позицию курсора для указанного файла или выставляет начало (0, 0).
+///
+/// **Почему это решает проблему зависания/замирания при открытии:**
+/// При вызове `buffer.set_text(...)` GTK по умолчанию оставляет курсор в самом конце текста.
+/// Это заставляет виджет `GtkTextView` вычислять разметку и прокручивать весь документ до конца,
+/// что на больших файлах вызывает ощутимый фриз UI.
+/// Немедленная установка курсора на сохраненную строку (или в начало (0, 0)) гарантирует,
+/// что GTK форматирует только видимую начальную область текста.
+fn apply_restored_cursor_position(
+    state: &AppState,
+    buffer: &gtk4::TextBuffer,
+    path: &std::path::Path,
+) {
+    let key = get_file_canonical_key(path);
+    let (line, col) = state
+        .settings
+        .borrow()
+        .file_cursor_positions
+        .get(&key)
+        .copied()
+        .unwrap_or((0, 0));
+
+    let line_count = buffer.line_count();
+    let target_line = (line as i32).min(line_count.saturating_sub(1)).max(0);
+    let mut iter = buffer
+        .iter_at_line(target_line)
+        .unwrap_or_else(|| buffer.start_iter());
+    let chars_in_line = iter.chars_in_line();
+    let valid_col = (col as i32).min(chars_in_line).max(0);
+    iter.set_line_offset(valid_col);
+
+    buffer.place_cursor(&iter);
+}
+
+/// Планирует плавную прокрутку редактора к текущей позиции курсора.
+///
+/// Используется `glib::idle_add_local_once`, так как на момент вызова окно еще может
+/// находиться в процессе компоновки/разметки виджетов GTK. Запуск прокрутки в следующем
+/// цикле главного потока событий гарантирует корректный расчет геометрии скролла.
+fn schedule_cursor_scroll(text_view: &gtk4::TextView) {
+    let text_view_clone = text_view.clone();
+    glib::idle_add_local_once(move || {
+        let buf = text_view_clone.buffer();
+        let insert_mark = buf.get_insert();
+        let mut iter = buf.iter_at_mark(&insert_mark);
+        if iter.line() == 0 {
+            text_view_clone.scroll_to_iter(&mut iter, 0.0, true, 0.0, 0.0);
+        } else {
+            text_view_clone.scroll_to_iter(&mut iter, 0.0, true, 0.0, 0.5);
+        }
+    });
+}
+
+/// Настраивает обработку горячих клавиш в редакторе текста `GtkTextView`.
+///
+/// Контроллер `gtk4::EventControllerKey` работает в фазе `PropagationPhase::Capture`:
+/// 1. **Подавление системного звукового сигнала (error bell)**:
+///    В GTK попытка перемещения курсора за пределы буфера (стрелка «Вниз» в конце документа
+///    или стрелка «Вверх» в начале документа) вызывает `gtk_widget_error_bell`, издавая системный звук.
+///    Перехватывая эти события и возвращая `Propagation::Stop`, мы предотвращаем вызов стандартного обработчика.
+/// 2. **Отступы строк (Tab / Shift+Tab)**:
+///    - Если выделен блок текста: добавляет/удаляет по 2 пробела в начале каждой строки блока.
+///    - Если курсор без выделения: вставляет 2 пробела или удаляет отступ строки без потери фокуса.
+///    - Действия оборачиваются в `buffer.begin_user_action()`, обеспечивая атомарный Undo/Redo.
+fn setup_editor_key_handling(text_view: &gtk4::TextView) {
     let key_controller = gtk4::EventControllerKey::new();
     key_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
 
@@ -1304,6 +1419,35 @@ fn setup_editor_tab_handling(text_view: &gtk4::TextView) {
             return glib::Propagation::Proceed;
         }
 
+        // 1. Подавление системного звукового сигнала на границах документа
+        let is_forward_boundary = keyval == gtk4::gdk::Key::Down
+            || keyval == gtk4::gdk::Key::KP_Down
+            || keyval == gtk4::gdk::Key::Page_Down
+            || keyval == gtk4::gdk::Key::KP_Page_Down
+            || keyval == gtk4::gdk::Key::Right
+            || keyval == gtk4::gdk::Key::KP_Right;
+        let is_backward_boundary = keyval == gtk4::gdk::Key::Up
+            || keyval == gtk4::gdk::Key::KP_Up
+            || keyval == gtk4::gdk::Key::Page_Up
+            || keyval == gtk4::gdk::Key::KP_Page_Up
+            || keyval == gtk4::gdk::Key::Left
+            || keyval == gtk4::gdk::Key::KP_Left;
+
+        if is_forward_boundary || is_backward_boundary {
+            let buffer = text_view_clone.buffer();
+            let insert_mark = buffer.get_insert();
+            let iter = buffer.iter_at_mark(&insert_mark);
+
+            // Если курсор в самом конце документа и нажимается клавиша движения вперед
+            if is_forward_boundary && iter.is_end() {
+                return glib::Propagation::Stop;
+            }
+            // Если курсор в самом начале документа и нажимается клавиша движения назад
+            if is_backward_boundary && iter.is_start() {
+                return glib::Propagation::Stop;
+            }
+        }
+
         let is_shift = state.contains(gtk4::gdk::ModifierType::SHIFT_MASK);
         let is_tab = keyval == gtk4::gdk::Key::Tab;
         let is_iso_left_tab = keyval == gtk4::gdk::Key::ISO_Left_Tab;
@@ -1314,12 +1458,12 @@ fn setup_editor_tab_handling(text_view: &gtk4::TextView) {
 
         let buffer = text_view_clone.buffer();
 
-        // 1. Shift + Tab (обратный отступ / unindent)
+        // 2. Shift + Tab (обратный отступ / unindent)
         if is_iso_left_tab || (is_tab && is_shift) {
             unindent_selection_or_cursor(&buffer);
             glib::Propagation::Stop
         } else if is_tab && !is_shift {
-            // 2. Tab (прямой отступ / indent)
+            // 3. Tab (прямой отступ / indent)
             indent_selection_or_cursor(&buffer);
             glib::Propagation::Stop
         } else {
@@ -1664,5 +1808,44 @@ mod tests {
         indent_selection_or_cursor(&buffer3);
         let full_text3 = buffer3.text(&buffer3.start_iter(), &buffer3.end_iter(), false);
         assert_eq!(full_text3.as_str(), "  line 1\n  line 2\nline 3\n");
+
+        // 4. Тест сохранения и восстановления позиции курсора для открытого файла
+        let buffer_cur = gtk4::TextBuffer::new(None);
+        buffer_cur.set_text("First line\nSecond line\nThird line\n");
+
+        let test_path = std::path::PathBuf::from("/test/sample_doc.md");
+        let app_state = AppState {
+            current_file: Rc::new(RefCell::new(Some(test_path.clone()))),
+            is_modified: Rc::new(RefCell::new(false)),
+            settings: Rc::new(RefCell::new(AppSettings::default())),
+            is_preview_active: Rc::new(RefCell::new(false)),
+            target_line: Rc::new(RefCell::new(None)),
+        };
+
+        // Устанавливаем курсор на строку 1, символ 5 ("d" в "Second")
+        let target_iter = buffer_cur.iter_at_line_offset(1, 5).unwrap();
+        buffer_cur.place_cursor(&target_iter);
+
+        // Сохраняем позицию курсора текущего файла
+        save_current_file_cursor_position(&app_state, &buffer_cur);
+
+        // Проверяем, что в словаре сохраненных позиций настроек появилась запись (1, 5)
+        let key = get_file_canonical_key(&test_path);
+        assert_eq!(
+            app_state.settings.borrow().file_cursor_positions.get(&key),
+            Some(&(1, 5))
+        );
+
+        // Сбрасываем курсор в начало документа
+        buffer_cur.place_cursor(&buffer_cur.start_iter());
+        let reset_iter = buffer_cur.iter_at_mark(&buffer_cur.get_insert());
+        assert_eq!(reset_iter.line(), 0);
+        assert_eq!(reset_iter.line_offset(), 0);
+
+        // Восстанавливаем позицию курсора из настроек
+        apply_restored_cursor_position(&app_state, &buffer_cur, &test_path);
+        let restored_iter = buffer_cur.iter_at_mark(&buffer_cur.get_insert());
+        assert_eq!(restored_iter.line(), 1);
+        assert_eq!(restored_iter.line_offset(), 5);
     }
 }

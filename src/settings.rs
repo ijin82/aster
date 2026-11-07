@@ -36,6 +36,9 @@ pub struct AppSettings {
     /// Показывать ли номера строк в редакторе текста.
     #[serde(default = "default_show_line_numbers")]
     pub show_line_numbers: bool,
+    /// Сохраненные позиции курсора (строка, колонка) для недавно открывавшихся файлов.
+    #[serde(default)]
+    pub file_cursor_positions: std::collections::HashMap<String, (usize, usize)>,
 }
 
 fn default_show_line_numbers() -> bool {
@@ -75,6 +78,7 @@ impl Default for AppSettings {
             window_height: default_window_height(),
             language: default_language(),
             show_line_numbers: default_show_line_numbers(),
+            file_cursor_positions: std::collections::HashMap::new(),
         }
     }
 }
