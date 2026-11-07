@@ -25,6 +25,8 @@ pub struct AppState {
     pub is_preview_active: Rc<RefCell<bool>>,
     /// Запоминаем долю прокрутки (0.0 .. 1.0) для синхронизации позиции между режимами
     pub scroll_ratio: Rc<RefCell<f64>>,
+    /// Текст строки под курсором (или в центре видимой области) для точного позиционирования в предпросмотре
+    pub focal_line_text: Rc<RefCell<String>>,
 }
 
 /// Перечисляет все моноширинные семейства шрифтов, доступные в системе через Pango Context.
@@ -62,6 +64,7 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
         settings: Rc::new(RefCell::new(settings.clone())),
         is_preview_active: Rc::new(RefCell::new(false)),
         scroll_ratio: Rc::new(RefCell::new(0.0)),
+        focal_line_text: Rc::new(RefCell::new(String::new())),
     };
 
     // Применяем цветовую схему из настроек
@@ -349,20 +352,67 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     web_view.connect_load_changed(move |_, load_event| {
         if load_event == webkit6::LoadEvent::Finished {
             let ratio = *state_for_load.scroll_ratio.borrow();
-            // Позиционируем документ в предпросмотре так, чтобы точка с долей `ratio`
-            // оказалась ровно по центру видимой области окна WebKit (как и в редакторе).
+            let focal_text = state_for_load.focal_line_text.borrow().clone();
+            let focal_json = serde_json::to_string(&focal_text).unwrap_or_else(|_| "\"\"".to_string());
+
+            // Интеллектуальный поиск элемента в DOM WebKit:
+            // 1. Сначала пытаемся найти точный элемент DOM, содержащий ключевой текст фокусной строки,
+            //    и плавно центрируем его на экране с помощью scrollIntoView({block: 'center'}).
+            //    Это гарантирует, что строка, которую пользователь редактировал, оказывается на экране
+            //    независимо от разницы в размерах шрифтов, разметке таблиц, отступах и т.д.
+            // 2. Если строка пустая или не найдена в DOM (например, специфические служебные символы),
+            //    используется пропорциональное позиционирование по центру видимой области.
             let script = format!(
-                "(function() {{
-                    var total = document.documentElement.scrollHeight;
-                    var winH = window.innerHeight;
-                    var maxScroll = total - winH;
-                    if (total > 0 && maxScroll > 0) {{
-                        var targetMidY = total * {ratio};
-                        var targetScrollY = targetMidY - (winH / 2.0);
-                        window.scrollTo(0, Math.max(0, Math.min(maxScroll, targetScrollY)));
+                r#"(function() {{
+                    var focalText = {focal_json};
+                    var targetRatio = {ratio};
+
+                    function cleanText(s) {{
+                        return s.replace(/[^\p{{L}}\p{{N}}]+/gu, ' ').trim().toLowerCase();
                     }}
-                }})();"
+
+                    var found = false;
+                    var cleanedFocal = cleanText(focalText);
+
+                    if (cleanedFocal.length >= 3) {{
+                        var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+                        var node;
+                        var candidates = [];
+                        while (node = walker.nextNode()) {{
+                            var text = node.textContent.trim();
+                            if (text.length > 0) {{
+                                candidates.push(node);
+                            }}
+                        }}
+
+                        // Ищем наиболее подходящее текстовое совпадение
+                        for (var i = 0; i < candidates.length; i++) {{
+                            var cNode = cleanText(candidates[i].textContent);
+                            if (cNode.length >= 3 && (cNode.includes(cleanedFocal) || cleanedFocal.includes(cNode))) {{
+                                var el = candidates[i].parentElement;
+                                if (el) {{
+                                    el.scrollIntoView({{ block: 'center', inline: 'nearest', behavior: 'instant' }});
+                                    found = true;
+                                    break;
+                                }}
+                            }}
+                        }}
+                    }}
+
+                    // Запасной вариант: центрирование по пропорциональной доле документа
+                    if (!found) {{
+                        var total = document.documentElement.scrollHeight;
+                        var winH = window.innerHeight;
+                        var maxScroll = total - winH;
+                        if (total > 0 && maxScroll > 0) {{
+                            var targetMidY = total * targetRatio;
+                            var targetScrollY = targetMidY - (winH / 2.0);
+                            window.scrollTo(0, Math.max(0, Math.min(maxScroll, targetScrollY)));
+                        }}
+                    }}
+                }})();"#
             );
+
             web_view_for_load.evaluate_javascript(
                 &script,
                 None,
@@ -404,13 +454,25 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
             let (cursor_y, cursor_height) = text_view_clone.line_yrange(&cursor_iter);
             let cursor_mid_y = (cursor_y + cursor_height / 2) as f64;
 
+            // Определяем целевую итерацию для поиска текста:
             // Если курсор находится в пределах текущего видимого экрана, ориентируемся на строку с курсором;
-            // в противном случае ориентируемся на центр видимой области редактора.
-            let focal_y = if cursor_mid_y >= visible_top && cursor_mid_y <= visible_bottom {
-                cursor_mid_y
+            // в противном случае ориентируемся на строку в центре видимой области редактора.
+            let (target_iter, focal_y) = if cursor_mid_y >= visible_top && cursor_mid_y <= visible_bottom {
+                (cursor_iter, cursor_mid_y)
             } else {
-                visible_top + page_size / 2.0
+                let center_y = (visible_top + page_size / 2.0).clamp(0.0, upper);
+                let (it, _) = text_view_clone.line_at_y(center_y as i32);
+                (it, center_y)
             };
+
+            // Извлекаем текст строки для точной привязки в HTML
+            let mut line_start = target_iter.clone();
+            line_start.set_line_offset(0);
+            let mut line_end = line_start.clone();
+            line_end.forward_to_line_end();
+            let line_text = buffer.text(&line_start, &line_end, false);
+
+            *state_for_toggle.focal_line_text.borrow_mut() = line_text.to_string();
 
             let target_ratio = if upper > 0.0 {
                 (focal_y / upper).clamp(0.0, 1.0)
