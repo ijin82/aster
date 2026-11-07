@@ -334,8 +334,14 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
         if load_event == webkit6::LoadEvent::Finished {
             let ratio = *state_for_load.scroll_ratio.borrow();
             let script = format!(
-                "window.scrollTo(0, (document.documentElement.scrollHeight - window.innerHeight) * {});",
-                ratio
+                "(function() {{
+                    var targetRatio = {ratio};
+                    var total = document.documentElement.scrollHeight - window.innerHeight;
+                    if (total > 0) {{
+                        var targetY = total * targetRatio;
+                        window.scrollTo(0, targetY);
+                    }}
+                }})();"
             );
             web_view_for_load.evaluate_javascript(
                 &script,
@@ -354,6 +360,7 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
     let edit_btn_clone = edit_btn.clone();
     let preview_btn_clone = preview_btn.clone();
     let editor_scroll_clone = editor_scroll.clone();
+    let text_view_clone = text_view.clone();
     let web_view_for_sync = web_view.clone();
 
     let switch_to_preview = {
@@ -361,6 +368,7 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
         let refresh_preview_for_toggle = refresh_preview_for_toggle.clone();
         let state_for_toggle = state_for_toggle.clone();
         let editor_scroll_clone = editor_scroll_clone.clone();
+        let text_view_clone = text_view_clone.clone();
         let preview_btn_clone = preview_btn_clone.clone();
 
         Rc::new(move || {
@@ -368,12 +376,26 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
             let upper = vadj.upper();
             let page_size = vadj.page_size();
             let max_scroll = upper - page_size;
-            let ratio = if max_scroll > 0.0 {
-                (vadj.value() / max_scroll).clamp(0.0, 1.0)
+
+            let buffer = text_view_clone.buffer();
+            let insert_mark = buffer.get_insert();
+            let cursor_iter = buffer.iter_at_mark(&insert_mark);
+            let (cursor_y, cursor_height) = text_view_clone.line_yrange(&cursor_iter);
+            let cursor_mid_y = (cursor_y + cursor_height / 2) as f64;
+
+            let visible_top = vadj.value();
+            let visible_bottom = visible_top + page_size;
+
+            let target_ratio = if cursor_mid_y >= visible_top && cursor_mid_y <= visible_bottom && upper > 0.0 {
+                (cursor_mid_y / upper).clamp(0.0, 1.0)
+            } else if max_scroll > 0.0 {
+                let center_y = visible_top + page_size / 2.0;
+                (center_y / upper).clamp(0.0, 1.0)
             } else {
                 0.0
             };
-            *state_for_toggle.scroll_ratio.borrow_mut() = ratio;
+
+            *state_for_toggle.scroll_ratio.borrow_mut() = target_ratio;
 
             *state_for_toggle.is_preview_active.borrow_mut() = true;
             refresh_preview_for_toggle();
@@ -390,7 +412,15 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
         let web_view_for_sync = web_view_for_sync.clone();
 
         Rc::new(move || {
-            let script = "var total = document.documentElement.scrollHeight - window.innerHeight; total > 0 ? (window.scrollY / total) : 0;";
+            // Запрашиваем положение центра видимой области документа в WebKit (0.0 .. 1.0)
+            let script = "(function() {
+                var total = document.documentElement.scrollHeight;
+                if (total > 0) {
+                    var midY = window.scrollY + (window.innerHeight / 2.0);
+                    return midY / total;
+                }
+                return 0.0;
+            })();";
             let editor_scroll_sync = editor_scroll_clone.clone();
 
             web_view_for_sync.evaluate_javascript(
@@ -400,11 +430,15 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
                 Option::<&gio::Cancellable>::None,
                 move |result| {
                     if let Ok(js_val) = result {
-                        let ratio = js_val.to_double().clamp(0.0, 1.0);
+                        let center_ratio = js_val.to_double().clamp(0.0, 1.0);
                         let vadj = editor_scroll_sync.vadjustment();
-                        let max_scroll = vadj.upper() - vadj.page_size();
-                        if max_scroll > 0.0 {
-                            vadj.set_value(max_scroll * ratio);
+                        let upper = vadj.upper();
+                        let page_size = vadj.page_size();
+                        let max_scroll = upper - page_size;
+                        if upper > 0.0 && max_scroll > 0.0 {
+                            // Позиционируем редактор так, чтобы соответствующая точка находилась по центру видимой области
+                            let target_top = (upper * center_ratio) - (page_size / 2.0);
+                            vadj.set_value(target_top.clamp(0.0, max_scroll));
                         }
                     }
                 },
