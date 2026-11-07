@@ -12,7 +12,12 @@ const GITHUB_CSS: &str = include_str!("../assets/github-markdown.css");
 /// * `markdown_input` — исходный текст на языке разметки Markdown.
 /// * `is_dark` — флаг темной темы (true для темной темы GitHub, false для светлой).
 /// * `font_size_px` — размер базового шрифта в пикселях.
-pub fn render_markdown_to_html(markdown_input: &str, is_dark: bool, font_size_px: u32) -> String {
+pub fn render_markdown_to_html(
+    markdown_input: &str,
+    is_dark: bool,
+    font_size_px: u32,
+    base_url: Option<&str>,
+) -> String {
     // Настраиваем парсер Markdown, включая расширения стандарта GitHub Flavored Markdown (GFM):
     let mut options = Options::empty();
     // 1. Таблицы: | col1 | col2 |
@@ -60,6 +65,11 @@ pub fn render_markdown_to_html(markdown_input: &str, is_dark: bool, font_size_px
         )
     };
 
+    let base_tag = match base_url {
+        Some(url) => format!(r#"<base href="{url}">"#),
+        None => String::new(),
+    };
+
     // Формируем готовый HTML5 документ со сбалансированной палитрой
     format!(
         r#"<!DOCTYPE html>
@@ -67,6 +77,7 @@ pub fn render_markdown_to_html(markdown_input: &str, is_dark: bool, font_size_px
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    {base_tag}
     <style>
         {GITHUB_CSS}
 

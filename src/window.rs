@@ -161,6 +161,13 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
 
     // --- 4. Рабочая область: Предпросмотр WebKitGTK ---
     let web_view = webkit6::WebView::new();
+
+    // Разрешаем загрузку локальных файлов (картинки, шрифты и svg относительно открытого документа)
+    if let Some(web_settings) = webkit6::prelude::WebViewExt::settings(&web_view) {
+        web_settings.set_allow_file_access_from_file_urls(true);
+        web_settings.set_allow_universal_access_from_file_urls(true);
+    }
+
     let preview_scroll = gtk4::ScrolledWindow::builder()
         .child(&web_view)
         .hexpand(true)
@@ -221,8 +228,27 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
             let style_mgr = adw::StyleManager::default();
             let is_dark = style_mgr.is_dark();
             let font_size = app_state.settings.borrow().preview_font_size;
-            let html = renderer::render_markdown_to_html(text.as_str(), is_dark, font_size);
-            web_view.load_html(&html, None);
+
+            // Вычисляем базовый URL директории текущего файла для загрузки относительных картинок и ресурсов
+            let base_uri = app_state.current_file.borrow().as_ref().and_then(|path| {
+                path.parent().and_then(|parent| {
+                    let canonical = parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf());
+                    let mut s = canonical.to_string_lossy().to_string();
+                    if !s.ends_with('/') {
+                        s.push('/');
+                    }
+                    Some(format!("file://{s}"))
+                })
+            });
+
+            let html = renderer::render_markdown_to_html(
+                text.as_str(),
+                is_dark,
+                font_size,
+                base_uri.as_deref(),
+            );
+
+            web_view.load_html(&html, base_uri.as_deref());
         })
     };
 
