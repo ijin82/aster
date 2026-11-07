@@ -182,6 +182,9 @@ pub fn build_window(app: &adw::Application, initial_file: Option<PathBuf>) -> ad
 
     text_view.add_css_class("editor-view");
 
+    // Обработка клавиш Tab и Shift+Tab для отступа и выравнивания строк
+    setup_editor_tab_handling(&text_view);
+
     // CssProvider для стилизации темы редактора (фон и цвет курсора/текста)
     let editor_theme_css_provider = gtk4::CssProvider::new();
     if let Some(display) = gtk4::gdk::Display::default() {
@@ -1093,6 +1096,240 @@ fn setup_search(entry: &gtk4::SearchEntry, text_view: &gtk4::TextView) {
     });
 }
 
+/// Выполняет добавление отступа (двух пробелов):
+/// - Если есть выделенный участок текста: добавляет по 2 пробела в начало каждой выделенной строки
+///   и сохраняет границы выделения с учетом смещения.
+/// - Если выделения нет: вставляет 2 пробела в позицию каретки.
+///
+/// Все операции обрамляются вызовами `buffer.begin_user_action()` и `buffer.end_user_action()`,
+/// обеспечивая единое действие для механизма Undo/Redo (`Ctrl+Z`).
+pub fn indent_selection_or_cursor(buffer: &gtk4::TextBuffer) {
+    if let Some((start_iter, end_iter)) = buffer.selection_bounds() {
+        if start_iter != end_iter {
+            // ВАЖНО: Извлекаем все свойства (номера строк и смещения колонок) ДО изменения буфера,
+            // так как любые вставки/удаления в GtkTextBuffer делают существующие GtkTextIter невалидными.
+            let start_line = start_iter.line();
+            let mut end_line = end_iter.line();
+            let original_end_line = end_iter.line();
+            // Если выделение заканчивается ровно в начале строки (offset 0), последняя строка не входит в выделенный блок
+            if end_line > start_line && end_iter.starts_line() {
+                end_line -= 1;
+            }
+
+            let start_col = start_iter.line_offset();
+            let end_col = end_iter.line_offset();
+
+            buffer.begin_user_action();
+
+            for line_idx in start_line..=end_line {
+                if let Some(mut line_iter) = buffer.iter_at_line(line_idx) {
+                    buffer.insert(&mut line_iter, "  ");
+                }
+            }
+
+            // Восстанавливаем границы выделения со смещением на 2 пробела через свежие итераторы
+            let new_start_col = if start_col > 0 { start_col + 2 } else { 0 };
+            let new_end_col = if original_end_line == end_line && end_col > 0 {
+                end_col + 2
+            } else {
+                end_col
+            };
+
+            if let Some(mut new_start) = buffer.iter_at_line(start_line) {
+                let mut line_end = new_start.clone();
+                line_end.forward_to_line_end();
+                new_start.set_line_offset(new_start_col.min(line_end.line_offset()).max(0));
+
+                if let Some(mut new_end) = buffer.iter_at_line(original_end_line) {
+                    let mut end_line_end = new_end.clone();
+                    end_line_end.forward_to_line_end();
+                    new_end.set_line_offset(new_end_col.min(end_line_end.line_offset()).max(0));
+
+                    buffer.select_range(&new_start, &new_end);
+                }
+            }
+
+            buffer.end_user_action();
+            return;
+        }
+    }
+
+    // Если выделения нет: вставляем 2 пробела в позицию каретки
+    buffer.begin_user_action();
+    buffer.insert_at_cursor("  ");
+    buffer.end_user_action();
+}
+
+/// Выполняет снятие отступа (удаление до двух начальных пробелов):
+/// - Если есть выделенный участок текста: удаляет до 2 начальных пробелов (или 1 символ табуляции)
+///   с каждой выделенной строки и адаптирует границы выделения.
+/// - Если выделения нет: удаляет до 2 начальных пробелов с начала текущей строки курсора,
+///   не приводя к потере фокуса виджетом.
+pub fn unindent_selection_or_cursor(buffer: &gtk4::TextBuffer) {
+    if let Some((start_iter, end_iter)) = buffer.selection_bounds() {
+        if start_iter != end_iter {
+            // ВАЖНО: Извлекаем свойства итераторов до изменения буфера
+            let start_line = start_iter.line();
+            let mut end_line = end_iter.line();
+            let original_end_line = end_iter.line();
+            // Если выделение заканчивается ровно в начале строки (offset 0), последняя строка не входит в выделенный блок
+            if end_line > start_line && end_iter.starts_line() {
+                end_line -= 1;
+            }
+
+            let mut start_col = start_iter.line_offset();
+            let mut end_col = end_iter.line_offset();
+
+            buffer.begin_user_action();
+
+            for line_idx in start_line..=end_line {
+                if let Some(mut line_iter) = buffer.iter_at_line(line_idx) {
+                    let mut chars_to_del = 0;
+                    let c1 = line_iter.char();
+                    if c1 == ' ' {
+                        chars_to_del += 1;
+                        let mut next = line_iter.clone();
+                        next.forward_char();
+                        let c2 = next.char();
+                        if c2 == ' ' {
+                            chars_to_del += 1;
+                        }
+                    } else if c1 == '\t' {
+                        chars_to_del = 1;
+                    }
+
+                    if chars_to_del > 0 {
+                        let mut del_end = line_iter.clone();
+                        del_end.forward_chars(chars_to_del);
+                        buffer.delete(&mut line_iter, &mut del_end);
+
+                        // Для знаковых i32 используем .max(0), чтобы предотвратить отрицательные оффсеты
+                        if line_idx == start_line {
+                            start_col = (start_col - chars_to_del).max(0);
+                        }
+                        if line_idx == original_end_line {
+                            end_col = (end_col - chars_to_del).max(0);
+                        }
+                    }
+                }
+            }
+
+            // Восстанавливаем границы выделения с учетом удаленных пробелов через свежие итераторы
+            if let Some(mut new_start) = buffer.iter_at_line(start_line) {
+                let mut line_end = new_start.clone();
+                line_end.forward_to_line_end();
+                new_start.set_line_offset(start_col.min(line_end.line_offset()).max(0));
+
+                if let Some(mut new_end) = buffer.iter_at_line(original_end_line) {
+                    let mut end_line_end = new_end.clone();
+                    end_line_end.forward_to_line_end();
+                    new_end.set_line_offset(end_col.min(end_line_end.line_offset()).max(0));
+
+                    buffer.select_range(&new_start, &new_end);
+                }
+            }
+
+            buffer.end_user_action();
+            return;
+        }
+    }
+
+    // Если выделения нет: убираем до двух пробелов с начала текущей строки курсора
+    let insert_mark = buffer.get_insert();
+    let cursor_iter = buffer.iter_at_mark(&insert_mark);
+    let cur_line = cursor_iter.line();
+    let cur_col = cursor_iter.line_offset();
+
+    buffer.begin_user_action();
+
+    let mut new_col = cur_col;
+    if let Some(mut line_iter) = buffer.iter_at_line(cur_line) {
+        let mut chars_to_del = 0;
+        let c1 = line_iter.char();
+        if c1 == ' ' {
+            chars_to_del += 1;
+            let mut next = line_iter.clone();
+            next.forward_char();
+            let c2 = next.char();
+            if c2 == ' ' {
+                chars_to_del += 1;
+            }
+        } else if c1 == '\t' {
+            chars_to_del = 1;
+        }
+
+        if chars_to_del > 0 {
+            let mut del_end = line_iter.clone();
+            del_end.forward_chars(chars_to_del);
+            buffer.delete(&mut line_iter, &mut del_end);
+            new_col = (cur_col - chars_to_del).max(0);
+        }
+    }
+
+    if let Some(mut new_iter) = buffer.iter_at_line(cur_line) {
+        let mut line_end = new_iter.clone();
+        line_end.forward_to_line_end();
+        new_iter.set_line_offset(new_col.min(line_end.line_offset()).max(0));
+        buffer.place_cursor(&new_iter);
+    }
+
+    buffer.end_user_action();
+}
+
+/// Настраивает обработку клавиш Tab и Shift+Tab в редакторе текста `GtkTextView`.
+///
+/// Контроллер `gtk4::EventControllerKey` настраивается в фазе `PropagationPhase::Capture`,
+/// чтобы перехватить нажатия клавиш до стандартного обработчика `GtkTextView`:
+/// - Если есть выделенный участок текста:
+///   - При нажатии `Tab` каждой строке, входящей в выделение, добавляется два пробела спереди.
+///   - При нажатии `Shift + Tab` у каждой строки, входящей в выделение, удаляется до двух пробелов с начала строки (если они есть).
+/// - Если текст не выделен:
+///   - `Tab` вставляет два пробела в позицию каретки.
+///   - `Shift + Tab` удаляет до двух пробелов с начала текущей строки, не приводя к потере фокуса виджетом.
+/// - Все изменения группируются через `buffer.begin_user_action()` и `buffer.end_user_action()`,
+///   что позволяет отменять и повторять многострочный отступ одним нажатием `Ctrl+Z` / `Ctrl+Shift+Z`.
+/// - Комбинации с `Control` или `Alt` (например, глобальный акселератор `Ctrl+Tab` для переключения режимов)
+///   не перехватываются и пропускаются дальше.
+fn setup_editor_tab_handling(text_view: &gtk4::TextView) {
+    let key_controller = gtk4::EventControllerKey::new();
+    key_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
+
+    let text_view_clone = text_view.clone();
+
+    key_controller.connect_key_pressed(move |_, keyval, _keycode, state| {
+        // Пропускаем комбинации с клавишами Control или Alt (например, Ctrl+Tab для переключения вкладок)
+        if state.contains(gtk4::gdk::ModifierType::CONTROL_MASK)
+            || state.contains(gtk4::gdk::ModifierType::ALT_MASK)
+        {
+            return glib::Propagation::Proceed;
+        }
+
+        let is_shift = state.contains(gtk4::gdk::ModifierType::SHIFT_MASK);
+        let is_tab = keyval == gtk4::gdk::Key::Tab;
+        let is_iso_left_tab = keyval == gtk4::gdk::Key::ISO_Left_Tab;
+
+        if !is_tab && !is_iso_left_tab {
+            return glib::Propagation::Proceed;
+        }
+
+        let buffer = text_view_clone.buffer();
+
+        // 1. Shift + Tab (обратный отступ / unindent)
+        if is_iso_left_tab || (is_tab && is_shift) {
+            unindent_selection_or_cursor(&buffer);
+            glib::Propagation::Stop
+        } else if is_tab && !is_shift {
+            // 2. Tab (прямой отступ / indent)
+            indent_selection_or_cursor(&buffer);
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+
+    text_view.add_controller(key_controller);
+}
+
 /// Отображает модальное окно настроек (`adw::PreferencesWindow`)
 fn show_preferences_dialog(
     parent: &adw::ApplicationWindow,
@@ -1378,4 +1615,54 @@ fn show_about_dialog(parent: &adw::ApplicationWindow, lang: Language) {
         .license_type(gtk4::License::MitX11)
         .build();
     about.present();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_indent_and_unindent() {
+        if gtk4::init().is_err() {
+            return;
+        }
+
+        // 1. Тест многострочного отступа и обратного отступа
+        let buffer = gtk4::TextBuffer::new(None);
+        buffer.set_text("line 1\nline 2\nline 3\n");
+
+        let start = buffer.iter_at_line(0).unwrap();
+        let end = buffer.iter_at_line_offset(1, 3).unwrap();
+        buffer.select_range(&start, &end);
+
+        indent_selection_or_cursor(&buffer);
+        let full_text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+        assert_eq!(full_text.as_str(), "  line 1\n  line 2\nline 3\n");
+
+        unindent_selection_or_cursor(&buffer);
+        let text_after_unindent = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+        assert_eq!(text_after_unindent.as_str(), "line 1\nline 2\nline 3\n");
+
+        // 2. Тест удаления одиночного пробела и отсутствия пробелов
+        let buffer2 = gtk4::TextBuffer::new(None);
+        buffer2.set_text(" line 1\nline 2\n");
+        let start2 = buffer2.iter_at_line(0).unwrap();
+        let end2 = buffer2.iter_at_line_offset(1, 4).unwrap();
+        buffer2.select_range(&start2, &end2);
+
+        unindent_selection_or_cursor(&buffer2);
+        let full_text2 = buffer2.text(&buffer2.start_iter(), &buffer2.end_iter(), false);
+        assert_eq!(full_text2.as_str(), "line 1\nline 2\n");
+
+        // 3. Тест выделения, заканчивающегося ровно в начале следующей строки (starts_line())
+        let buffer3 = gtk4::TextBuffer::new(None);
+        buffer3.set_text("line 1\nline 2\nline 3\n");
+        let start3 = buffer3.iter_at_line(0).unwrap();
+        let end3 = buffer3.iter_at_line(2).unwrap();
+        buffer3.select_range(&start3, &end3);
+
+        indent_selection_or_cursor(&buffer3);
+        let full_text3 = buffer3.text(&buffer3.start_iter(), &buffer3.end_iter(), false);
+        assert_eq!(full_text3.as_str(), "  line 1\n  line 2\nline 3\n");
+    }
 }
