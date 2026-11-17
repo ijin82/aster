@@ -88,6 +88,10 @@ pub struct Document {
 
     /// Последняя известная позиция прокрутки редактора.
     pub editor_scroll_position: Cell<f64>,
+    /// Пока true, изменения GtkAdjustment игнорируются: идет восстановление
+    /// позиции после показа редактора, и промежуточные сбросы в 0 не должны
+    /// попасть ни в память документа, ни в сохраняемую сессию.
+    suppress_editor_scroll_updates: Rc<Cell<bool>>,
     /// Последняя известная позиция прокрутки предпросмотра.
     pub preview_scroll_position: Rc<Cell<f64>>,
     /// Позиция, которую нужно восстановить после следующей загрузки HTML.
@@ -258,6 +262,7 @@ impl Document {
             is_modified: Cell::new(false),
             is_preview_active: Cell::new(initial_preview_active),
             editor_scroll_position: Cell::new(0.0),
+            suppress_editor_scroll_updates: Rc::new(Cell::new(false)),
             preview_scroll_position: preview_scroll_position.clone(),
             pending_preview_scroll: pending_preview_scroll.clone(),
             settings: settings.clone(),
@@ -317,11 +322,26 @@ impl Document {
         });
 
         // 2. Запоминаем позицию прокрутки редактора при каждом изменении.
-        let editor_scroll_cell = self.editor_scroll_position.clone();
+        //
+        // Важно: когда открыт предпросмотр, редактор скрыт и его
+        // GtkAdjustment может сброситься в 0. Если записывать это значение,
+        // сохраненная позиция редактора потеряется и после возврата документ
+        // «отскочит» в начало. Поэтому обновляем ячейку только в режиме
+        // редактора. Целевое значение при переключении захватывается заранее
+        // в `switch_to_editor`.
+        let weak_doc = Rc::downgrade(self);
+        let suppress_editor_scroll_updates = self.suppress_editor_scroll_updates.clone();
         self.editor_scroll
             .vadjustment()
             .connect_value_changed(move |adj| {
-                editor_scroll_cell.set(adj.value());
+                if suppress_editor_scroll_updates.get() {
+                    return;
+                }
+                if let Some(doc) = weak_doc.upgrade() {
+                    if !doc.is_preview_active.get() {
+                        doc.editor_scroll_position.set(adj.value());
+                    }
+                }
             });
 
         // 3. WebKit присылает scrollY через message handler. Сохраняем значение
@@ -433,8 +453,13 @@ impl Document {
             return;
         }
 
-        // Сохраняем актуальную прокрутку редактора (она и так обновляется
-        // обработчиком GtkAdjustment) и запоминаем, что режим изменился.
+        // Явно считываем текущую прокрутку, пока редактор еще видим.
+        // Полагаться только на `value_changed` нельзя: при скрытии
+        // ScrolledWindow может изменить adjustment, и это не должно
+        // перезаписать пользовательскую позицию.
+        self.editor_scroll_position
+            .set(self.editor_scroll.vadjustment().value());
+
         self.is_preview_active.set(true);
         self.refresh_preview();
         self.view_stack.set_visible_child_name("preview");
@@ -446,12 +471,17 @@ impl Document {
             return;
         }
 
+        // Захватываем цель ДО смены видимого ребенка: показ редактора
+        // может синхронно изменить GtkAdjustment сбросом в 0. Пока идет
+        // восстановление, обработчик adjustment не должен обновлять ячейку.
+        let target = self.editor_scroll_position.get();
+        self.suppress_editor_scroll_updates.set(true);
         self.is_preview_active.set(false);
         self.view_stack.set_visible_child_name("editor");
 
         // Возвращаем ровно ту позицию прокрутки, которую пользователь
         // оставил в редакторе. Никаких вычислений по DOM не требуется.
-        self.schedule_editor_scroll();
+        self.schedule_editor_scroll_to(target);
     }
 
     /// Перерисовывает HTML-предпросмотр из текущего содержимого буфера.
@@ -495,11 +525,23 @@ impl Document {
 
     /// Прокручивает редактор к сохраненной позиции после перекомпоновки виджетов.
     fn schedule_editor_scroll(&self) {
+        self.schedule_editor_scroll_to(self.editor_scroll_position.get());
+    }
+
+    /// Прокручивает редактор к явно переданной позиции в следующем idle-цикле.
+    ///
+    /// Значение передается аргументом, а не читается из ячейки позже: за время
+    /// до idle-цикла GTK может успеть пересчитать adjustment скрытого/только что
+    /// показанного ScrolledWindow.
+    fn schedule_editor_scroll_to(&self, target: f64) {
         let adjustment = self.editor_scroll.vadjustment();
-        let target = self.editor_scroll_position.get();
+        let suppress_editor_scroll_updates = self.suppress_editor_scroll_updates.clone();
+        self.suppress_editor_scroll_updates.set(true);
+
         glib::idle_add_local_once(move || {
             let max = (adjustment.upper() - adjustment.page_size()).max(0.0);
             adjustment.set_value(target.clamp(0.0, max));
+            suppress_editor_scroll_updates.set(false);
         });
     }
 
