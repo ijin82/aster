@@ -1,7 +1,9 @@
 [package]
-name = "rmd-view"
+name = "aster"
 version = "0.1.0"
 edition = "2021"
+description = "Aster — Markdown viewer and editor for GNOME"
+license = "MIT"
 
 [dependencies]
 gtk4 = { version = "0.9", features = ["v4_10"] }

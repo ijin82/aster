@@ -29,7 +29,7 @@ use crate::settings::{AppSettings, FileViewState};
 
 /// Имя обработчика JavaScript-сообщений, через который WebKit сообщает
 /// актуальную позицию прокрутки предпросмотра.
-const SCROLL_MESSAGE_HANDLER: &str = "rmdPreviewScroll";
+const SCROLL_MESSAGE_HANDLER: &str = "asterPreviewScroll";
 
 /// JavaScript-скрипт, внедряемый в каждую страницу предпросмотра.
 ///
@@ -38,10 +38,10 @@ const SCROLL_MESSAGE_HANDLER: &str = "rmdPreviewScroll";
 /// синхронного опроса WebKit при переключении режимов.
 const SCROLL_TRACKER_SCRIPT: &str = r#"
 (function () {
-    if (window.__rmdScrollTrackerInstalled) {
+    if (window.__asterScrollTrackerInstalled) {
         return;
     }
-    window.__rmdScrollTrackerInstalled = true;
+    window.__asterScrollTrackerInstalled = true;
 
     var scheduled = false;
 
@@ -53,8 +53,8 @@ const SCROLL_TRACKER_SCRIPT: &str = r#"
                 || document.body.scrollTop
                 || 0;
             if (window.webkit && window.webkit.messageHandlers
-                && window.webkit.messageHandlers.rmdPreviewScroll) {
-                window.webkit.messageHandlers.rmdPreviewScroll.postMessage(y);
+                && window.webkit.messageHandlers.asterPreviewScroll) {
+                window.webkit.messageHandlers.asterPreviewScroll.postMessage(y);
             }
         } catch (e) {
             // Предпросмотр может быть уже выгружен при закрытии вкладки.

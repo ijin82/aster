@@ -1,4 +1,4 @@
-# Добро пожаловать в rmd-view! 🦀
+# Добро пожаловать в Aster! 🦀
 
 Это пример документа Markdown для проверки рендеринга в стиле **GitHub**.
 
@@ -22,7 +22,7 @@
 ## 3. Блок кода
 ```rust
 fn main() {
-    println!("Hello from rmd-view with GTK4 and WebKitGTK!");
+    println!("Hello from Aster with GTK4 and WebKitGTK!");
 }
 ```
 

@@ -3,6 +3,12 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+/// Имя каталога конфигурации приложения в XDG_CONFIG_HOME.
+const CONFIG_DIR_NAME: &str = "aster";
+/// Старое имя каталога (`rmd-view`) до переименования проекта.
+/// Используется только для однократного чтения старых настроек.
+const LEGACY_CONFIG_DIR_NAME: &str = "rmd-view";
+
 /// Положение прокрутки и режим просмотра, сохраненные для одного документа.
 ///
 /// В отличие от позиции курсора, здесь хранятся два независимых значения:
@@ -122,17 +128,31 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
-    /// Возвращает путь к файлу конфигурации:
-    /// Обычно это `~/.config/rmd-view/settings.json` в Linux (по стандарту XDG).
-    fn config_path() -> Option<PathBuf> {
+    /// Возвращает путь к файлу конфигурации в каталоге с указанным именем.
+    fn config_path_in(dir_name: &str) -> Option<PathBuf> {
         dirs::config_dir().map(|mut p| {
-            p.push("rmd-view");
+            p.push(dir_name);
             p.push("settings.json");
             p
         })
     }
 
+    /// Путь к актуальному файлу настроек: `~/.config/aster/settings.json`.
+    fn config_path() -> Option<PathBuf> {
+        Self::config_path_in(CONFIG_DIR_NAME)
+    }
+
+    /// Путь к настройкам старого `rmd-view` (до переименования в Aster).
+    fn legacy_config_path() -> Option<PathBuf> {
+        Self::config_path_in(LEGACY_CONFIG_DIR_NAME)
+    }
+
     /// Загружает настройки из файла конфигурации.
+    ///
+    /// Если новый файл `~/.config/aster/settings.json` еще не создан,
+    /// выполняется мягкая миграция: настройки читаются из старого каталога
+    /// `~/.config/rmd-view/settings.json`. При следующем сохранении они
+    /// будут записаны уже под новым именем.
     /// Если файл отсутствует или поврежден, возвращаются настройки по умолчанию.
     pub fn load() -> Self {
         if let Some(path) = Self::config_path() {
@@ -142,11 +162,20 @@ impl AppSettings {
                 }
             }
         }
+
+        if let Some(path) = Self::legacy_config_path() {
+            if let Ok(content) = fs::read_to_string(&path) {
+                if let Ok(settings) = serde_json::from_str::<AppSettings>(&content) {
+                    return settings;
+                }
+            }
+        }
+
         Self::default()
     }
 
     /// Сохраняет текущие настройки на диск в формате JSON с отступами.
-    /// Создает директорию `~/.config/rmd-view`, если она еще не существует.
+    /// Создает директорию `~/.config/aster`, если она еще не существует.
     pub fn save(&self) {
         if let Some(path) = Self::config_path() {
             if let Some(parent) = path.parent() {

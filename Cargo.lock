@@ -3,6 +3,19 @@
 version = 4
 
 [[package]]
+name = "aster"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "gtk4",
+ "libadwaita",
+ "pulldown-cmark",
+ "serde",
+ "serde_json",
+ "webkit6",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -619,19 +632,6 @@ dependencies = [
  "getrandom",
  "libredox",
  "thiserror",
-]
-
-[[package]]
-name = "rmd-view"
-version = "0.1.0"
-dependencies = [
- "dirs",
- "gtk4",
- "libadwaita",
- "pulldown-cmark",
- "serde",
- "serde_json",
- "webkit6",
 ]
 
 [[package]]

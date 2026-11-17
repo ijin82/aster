@@ -45,7 +45,8 @@ pub fn build_window(
 
     let window = adw::ApplicationWindow::builder()
         .application(app)
-        .title("rmd-view")
+        .title("Aster")
+        .icon_name("io.github.aster")
         .default_width(settings.borrow().window_width)
         .default_height(settings.borrow().window_height)
         .build();
@@ -171,7 +172,7 @@ pub fn build_window(
         Rc::new(move || {
             let lang = Language::from_code(&settings.borrow().language);
             let Some(doc) = active_document(&tab_view, &docs) else {
-                window.set_title(Some("rmd-view"));
+                window.set_title(Some("Aster"));
                 save_btn.set_sensitive(false);
                 edit_btn.set_sensitive(false);
                 preview_btn.set_sensitive(false);
@@ -184,7 +185,7 @@ pub fn build_window(
             preview_btn.set_sensitive(true);
             search_btn.set_sensitive(true);
 
-            window.set_title(Some(&format!("{} — rmd-view", doc.window_title(lang))));
+            window.set_title(Some(&format!("{} — Aster", doc.window_title(lang))));
 
             let is_modified = doc.is_modified.get();
             if is_modified {
@@ -1492,8 +1493,9 @@ fn show_about_dialog(parent: &adw::ApplicationWindow, lang: Language) {
     let about = adw::AboutWindow::builder()
         .transient_for(parent)
         .modal(true)
-        .application_name("rmd-view")
-        .version("0.1.0")
+        .application_name("Aster")
+        .application_icon("io.github.aster")
+        .version(env!("CARGO_PKG_VERSION"))
         .developer_name("Developer")
         .comments(lang.about_comments())
         .issue_url("https://github.com")

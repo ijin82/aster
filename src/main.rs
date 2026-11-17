@@ -1,4 +1,4 @@
-//! Главный модуль приложения `rmd-view`.
+//! Главный модуль приложения `Aster`.
 //!
 //! Инициализирует приложение на базе `adw::Application`, обрабатывает сигналы
 //! `activate` и `open`, а также восстанавливает прошлую сессию (открытые
@@ -15,9 +15,25 @@ mod settings;
 mod window;
 
 /// Уникальный идентификатор приложения по стандарту Reverse-DNS (D-Bus ID).
-const APP_ID: &str = "io.github.rmd_view";
+const APP_ID: &str = "io.github.aster";
 
 fn main() {
+    // `--version` и `--help` обрабатываем до инициализации GTK, чтобы они
+    // работали в терминале и в сценариях упаковки без графической сессии.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "--version" || arg == "-V") {
+        println!("aster v{}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        println!(
+            "Aster — просмотрщик и редактор Markdown\n\n\
+             Использование: aster [ФАЙЛ ...]\n\n\
+             Параметры:\n  -h, --help     показать эту справку\n  -V, --version  показать версию"
+        );
+        return;
+    }
+
     // HANDLES_OPEN позволяет GApplication самому разобрать пути из командной
     // строки и передать их в сигнал `open`, не дублируя их ручным разбором env::args.
     let app = adw::Application::builder()
@@ -25,7 +41,7 @@ fn main() {
         .flags(gtk4::gio::ApplicationFlags::HANDLES_OPEN)
         .build();
 
-    // Обычный запуск без файлов: окно восстанавливает вкладки прошлой сессии.
+    // Обычный запуск без файлов: окно Aster восстанавливает вкладки прошлой сессии.
     app.connect_activate(|app| {
         if let Some(window) = app.active_window() {
             window.present();
