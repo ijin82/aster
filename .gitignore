@@ -35,3 +35,9 @@ Thumbs.db
 *.log
 core
 core.*
+
+# --- Артефакты релизной упаковки ---
+/dist/
+/preview/
+.preview/
+.test-*/
