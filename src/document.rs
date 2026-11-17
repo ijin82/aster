@@ -31,6 +31,13 @@ use crate::settings::{AppSettings, FileViewState};
 /// актуальную позицию прокрутки предпросмотра.
 const SCROLL_MESSAGE_HANDLER: &str = "asterPreviewScroll";
 
+/// Максимум одновременно подсвеченных обычных совпадений в редакторе.
+///
+/// GtkTextBuffer применяет каждый TextTag отдельно, и на файле с тысячами
+/// вхождений это занимает секунды. Текущее совпадение подсвечивается всегда,
+/// а счётчик и навигация продолжают работать по полному списку.
+const MAX_SEARCH_HIGHLIGHTS: usize = 200;
+
 /// JavaScript-скрипт, внедряемый в каждую страницу предпросмотра.
 ///
 /// Он слушает событие `scroll` и отправляет `window.scrollY` в нативный код.
@@ -324,6 +331,9 @@ pub struct Document {
     preview_search_index: Cell<usize>,
     /// Номер поколения preview-поиска: защищает от запоздавших JS-ответов.
     preview_search_generation: Cell<u64>,
+    /// Режим массовой правки: тяжёлая подсветка и поиск откладываются
+    /// до окончания серии изменений буфера.
+    bulk_editing: Cell<bool>,
     /// Текстовый буфер редактора.
     pub buffer: gtk4::TextBuffer,
     /// Виджет редактора.
@@ -373,7 +383,10 @@ impl Document {
             style_mgr.is_dark(),
         );
 
-        let buffer = gtk4::TextBuffer::builder().tag_table(&tag_table).build();
+        let buffer = gtk4::TextBuffer::builder()
+            .tag_table(&tag_table)
+            .enable_undo(true)
+            .build();
         let text_view = gtk4::TextView::builder()
             .buffer(&buffer)
             .wrap_mode(gtk4::WrapMode::Word)
@@ -567,6 +580,7 @@ impl Document {
             preview_search_count: Cell::new(0),
             preview_search_index: Cell::new(0),
             preview_search_generation: Cell::new(0),
+            bulk_editing: Cell::new(false),
             buffer,
             text_view,
             editor_scroll,
@@ -615,6 +629,15 @@ impl Document {
         self.buffer.connect_changed(move |buf| {
             if let Some(doc) = weak_doc.upgrade() {
                 doc.is_modified.set(true);
+
+                // Во время массовой замены changed срабатывает на каждую
+                // правку. Полная подсветка 1.7-МБ файла на каждой из тысяч
+                // замен — главная причина зависания. Делаем это один раз
+                // в end_bulk_edit().
+                if doc.bulk_editing.get() {
+                    return;
+                }
+
                 doc.gutter.queue_draw();
                 highlighter::highlight_markdown_buffer(buf);
                 if !doc.suppress_search_refresh.get() {
@@ -830,7 +853,9 @@ impl Document {
             .get(&key)
             .copied();
 
+        self.bulk_editing.set(true);
         self.buffer.set_text(&content);
+        self.bulk_editing.set(false);
         highlighter::highlight_markdown_buffer(&self.buffer);
         *self.current_file.borrow_mut() = Some(path.to_path_buf());
         self.is_modified.set(false);
@@ -1324,6 +1349,7 @@ impl Document {
         let replacement_len = replacement.chars().count() as i32;
 
         self.suppress_search_refresh.set(true);
+        self.bulk_editing.set(true);
         self.buffer.begin_user_action();
 
         let mut start_iter = self.buffer.iter_at_offset(match_start);
@@ -1337,6 +1363,7 @@ impl Document {
 
         self.buffer.end_user_action();
         self.suppress_search_refresh.set(false);
+        self.end_bulk_edit();
 
         self.refresh_search_matches(false);
 
@@ -1363,12 +1390,22 @@ impl Document {
         let replacement = self.replace_entry.text().to_string();
 
         self.suppress_search_refresh.set(true);
+        self.bulk_editing.set(true);
         let count = replace_all_matches(&self.buffer, &query, &replacement);
         self.suppress_search_refresh.set(false);
+        self.end_bulk_edit();
 
         if count > 0 {
             self.refresh_search_matches(true);
         }
+    }
+
+    /// Завершает серию правок и один раз обновляет тяжёлые представления.
+    fn end_bulk_edit(&self) {
+        self.bulk_editing.set(false);
+        highlighter::highlight_markdown_buffer(&self.buffer);
+        self.gutter.queue_draw();
+        self.update_tab_title();
     }
 
     /// Пересчитывает совпадения по текущему запросу.
@@ -1406,7 +1443,7 @@ impl Document {
         let matches = find_matches(&self.buffer, &query);
         let total = matches.len();
 
-        for &(match_start, match_end) in &matches {
+        for &(match_start, match_end) in matches.iter().take(MAX_SEARCH_HIGHLIGHTS) {
             let start_iter = self.buffer.iter_at_offset(match_start);
             let end_iter = self.buffer.iter_at_offset(match_end);
             self.buffer
@@ -1715,16 +1752,50 @@ fn replace_all_matches(buffer: &gtk4::TextBuffer, query: &str, replacement: &str
         return 0;
     }
 
-    buffer.begin_user_action();
-    for &(start, end) in matches.iter().rev() {
-        let mut start_iter = buffer.iter_at_offset(start);
-        let mut end_iter = buffer.iter_at_offset(end);
-        buffer.delete(&mut start_iter, &mut end_iter);
+    let original = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+    let mut result = String::with_capacity(original.len());
+    let mut chars = original.char_indices();
+    let mut char_index = 0usize;
 
-        if !replacement.is_empty() {
-            let mut insert_iter = buffer.iter_at_offset(start);
-            buffer.insert(&mut insert_iter, replacement);
+    // Собираем новый текст в памяти: одна операция set_text вместо тысяч
+    // delete/insert, каждое из которых поднимает changed и перестраивает
+    // undo-стек GtkTextBuffer.
+    for &(start, end) in &matches {
+        let start = start.max(0) as usize;
+        let end = end.max(0) as usize;
+
+        while char_index < start {
+            let Some((_, ch)) = chars.next() else {
+                break;
+            };
+            result.push(ch);
+            char_index += 1;
         }
+
+        result.push_str(replacement);
+
+        while char_index < end {
+            if chars.next().is_none() {
+                break;
+            }
+            char_index += 1;
+        }
+    }
+
+    for (_, ch) in chars {
+        result.push(ch);
+    }
+
+    // Одна группа Undo: удаляем старый текст и вставляем новый. Это
+    // заметно быстрее тысяч отдельных delete/insert и, в отличие от
+    // set_text, остается отменяемым действием.
+    buffer.begin_user_action();
+    let mut start = buffer.start_iter();
+    let mut end = buffer.end_iter();
+    buffer.delete(&mut start, &mut end);
+    if !result.is_empty() {
+        let mut insert_at = buffer.start_iter();
+        buffer.insert(&mut insert_at, &result);
     }
     buffer.end_user_action();
 
@@ -1733,11 +1804,50 @@ fn replace_all_matches(buffer: &gtk4::TextBuffer, query: &str, replacement: &str
 
 /// Находит все вхождения запроса и возвращает их диапазоны в offset'ах буфера.
 fn find_matches(buffer: &gtk4::TextBuffer, query: &str) -> Vec<(i32, i32)> {
-    let mut matches = Vec::new();
     if query.is_empty() {
-        return matches;
+        return Vec::new();
     }
 
+    let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+    let lower_text = text.to_lowercase();
+    let lower_query = query.to_lowercase();
+
+    // to_lowercase() может изменить длину строки (например, для некоторых
+    // редких Unicode-символов). В таком случае byte offsets нельзя
+    // сопоставить с исходным текстом, поэтому используем медленный,
+    // но универсальный поиск GTK.
+    if lower_query.is_empty() || lower_text.len() != text.len() {
+        return find_matches_gtk(buffer, query);
+    }
+
+    // Сопоставление byte offset → character offset нужно, потому что
+    // GtkTextBuffer и GtkTextIter работают с character offset.
+    let mut boundaries = Vec::with_capacity(text.len().min(1_000_000));
+    for (byte_index, _) in text.char_indices() {
+        boundaries.push(byte_index as u32);
+    }
+    boundaries.push(text.len() as u32);
+
+    lower_text
+        .match_indices(&lower_query)
+        .map(|(start, _matched)| {
+            let end = start + lower_query.len();
+            let start_char = boundaries
+                .binary_search(&(start as u32))
+                .unwrap_or_else(|index| index);
+            let end_char = boundaries
+                .binary_search(&(end as u32))
+                .unwrap_or_else(|index| index);
+            (start_char as i32, end_char as i32)
+        })
+        .collect()
+}
+
+/// Универсальный fallback поиска через GtkTextBuffer.
+///
+/// Используется, только если lowercase-преобразование меняет длину строки.
+fn find_matches_gtk(buffer: &gtk4::TextBuffer, query: &str) -> Vec<(i32, i32)> {
+    let mut matches = Vec::new();
     let mut iter = buffer.start_iter();
 
     while let Some((match_start, match_end)) = iter.forward_search(
@@ -2251,6 +2361,13 @@ mod tests {
 
         assert!(find_matches(&buffer, "xyz").is_empty());
         assert!(find_matches(&buffer, "").is_empty());
+
+        let buffer = gtk4::TextBuffer::new(None);
+        buffer.set_text("Привет привет ПРИВЕТ");
+        let matches = find_matches(&buffer, "привет");
+        assert_eq!(matches.len(), 3);
+        assert_eq!(matches[0], (0, 6));
+        assert_eq!(matches[1], (7, 13));
     }
 
     #[test]
@@ -2465,10 +2582,21 @@ mod tests {
         let buffer = gtk4::TextBuffer::new(None);
         buffer.set_text("Foo foo food\nbar\n");
 
+        buffer.set_enable_undo(true);
+        let original = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
         let count = replace_all_matches(&buffer, "foo", "baz");
         assert_eq!(count, 3);
         let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
         assert_eq!(text.as_str(), "baz baz bazd\nbar\n");
+
+        assert!(buffer.can_undo());
+        buffer.undo();
+        assert_eq!(
+            buffer
+                .text(&buffer.start_iter(), &buffer.end_iter(), false)
+                .as_str(),
+            original.as_str()
+        );
 
         // Пустая строка замены удаляет совпадения, но не ломает текст.
         let buffer = gtk4::TextBuffer::new(None);
