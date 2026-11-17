@@ -43,6 +43,48 @@ const SCROLL_TRACKER_SCRIPT: &str = r#"
     }
     window.__asterScrollTrackerInstalled = true;
 
+    // Добавляем GitHub-подобные id заголовкам, чтобы ссылки вида
+    // [текст](#заголовок) работали и внутри Markdown-предпросмотра.
+    // Скрипт выполняется как WebKit user script, поэтому CSP его не блокирует.
+    function installHeadingAnchors() {
+        var used = {};
+        var headings = document.querySelectorAll('h1,h2,h3,h4,h5,h6');
+
+        for (var i = 0; i < headings.length; i++) {
+            var heading = headings[i];
+            if (heading.id) {
+                used[heading.id] = true;
+                continue;
+            }
+
+            var base = (heading.textContent || '')
+                .trim()
+                .toLowerCase()
+                .replace(/[^\p{L}\p{N}\s-]/gu, '')
+                .replace(/\s+/g, '-');
+
+            if (!base) {
+                continue;
+            }
+
+            var id = base;
+            var suffix = 2;
+            while (used[id] || document.getElementById(id)) {
+                id = base + '-' + suffix;
+                suffix++;
+            }
+
+            used[id] = true;
+            heading.id = id;
+        }
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', installHeadingAnchors);
+    } else {
+        installHeadingAnchors();
+    }
+
     var scheduled = false;
 
     function report() {
@@ -493,9 +535,11 @@ impl Document {
                             .unwrap_or_else(|_| "\"\"".to_string());
                         let script = format!(
                             "(function() {{ \
-                                if (!{id_json}) {{ window.scrollTo(0, 0); return; }} \
-                                var el = document.getElementById({id_json}) \
-                                    || document.getElementsByName({id_json})[0]; \
+                                var id = {id_json}; \
+                                try {{ id = decodeURIComponent(id); }} catch (e) {{}} \
+                                if (!id) {{ window.scrollTo(0, 0); return; }} \
+                                var el = document.getElementById(id) \
+                                    || document.getElementsByName(id)[0]; \
                                 if (el) {{ el.scrollIntoView(true); }} \
                             }})();"
                         );
