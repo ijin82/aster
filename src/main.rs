@@ -10,6 +10,7 @@ use std::path::PathBuf;
 mod document;
 mod highlighter;
 mod i18n;
+mod recovery;
 mod renderer;
 mod settings;
 mod shortcuts;

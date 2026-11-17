@@ -13,10 +13,11 @@ use gtk4::gio;
 use gtk4::glib;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
-use crate::document::{self, Document};
+use crate::document::{self, Document, FileChange};
 use crate::i18n::Language;
+use crate::recovery::{self, RecoveryDraft};
 use crate::settings::AppSettings;
 
 mod actions;
@@ -180,6 +181,8 @@ pub fn build_window(
     // Стек закрытых файлов текущей сессии для Ctrl+Shift+T.
     let closed_tabs: Rc<RefCell<Vec<PathBuf>>> = Rc::new(RefCell::new(Vec::new()));
     const MAX_CLOSED_TABS: usize = 50;
+    // Защита от частой записи recovery.json при каждом нажатии клавиши.
+    let recovery_scheduled = Rc::new(Cell::new(false));
     let suppress_mode_sync = Rc::new(Cell::new(false));
     let suppress_search_sync = Rc::new(Cell::new(false));
     let is_force_closing = Rc::new(Cell::new(false));
@@ -249,6 +252,14 @@ pub fn build_window(
         })
     };
 
+    // --- Аварийное сохранение безымянных черновиков ---
+    let save_recovery_now: Rc<dyn Fn()> = {
+        let docs = docs.clone();
+        Rc::new(move || {
+            recovery::save(&collect_recovery_drafts(&docs));
+        })
+    };
+
     // --- Добавление документа во вкладку ---
     let add_document: Rc<dyn Fn(Option<PathBuf>, bool) -> Option<adw::TabPage>> = {
         let settings = settings.clone();
@@ -260,6 +271,10 @@ pub fn build_window(
         let show_toast = show_toast.clone();
         let settings_for_error = settings.clone();
         let last_open_directory = last_open_directory.clone();
+        let toast_overlay_for_file = toast_overlay.clone();
+        let docs_for_recovery = Rc::downgrade(&docs);
+        let recovery_scheduled_for_change = recovery_scheduled.clone();
+        let persist_for_file = Rc::downgrade(&persist_session);
 
         Rc::new(move |path: Option<PathBuf>, restore_mode: bool| {
             // Если файл уже открыт, не создаем дубликат, а переключаемся на него.
@@ -294,11 +309,75 @@ pub fn build_window(
             *doc.tab_page.borrow_mut() = Some(page.clone());
             doc.update_tab_title();
 
+            // Следим за изменениями файла на диске. Слабые ссылки на
+            // callbacks окна нужны, чтобы Document не удерживал docs и
+            // refresh_active_ui, иначе получился бы цикл владения.
+            let weak_doc_for_file = Rc::downgrade(&doc);
+            let settings_for_file = settings.clone();
+            let refresh_for_file = Rc::downgrade(&refresh_active_ui);
+            let show_toast_for_file = show_toast.clone();
+            let toast_overlay_for_conflict = toast_overlay_for_file.clone();
+            let persist_for_file = persist_for_file.clone();
+            doc.watch_file(Rc::new(move |change| {
+                let Some(doc) = weak_doc_for_file.upgrade() else {
+                    return;
+                };
+                let lang = Language::from_code(&settings_for_file.borrow().language);
+
+                match change {
+                    FileChange::Reloaded => {
+                        if let Some(refresh) = refresh_for_file.upgrade() {
+                            refresh();
+                        }
+                        if let Some(persist) = persist_for_file.upgrade() {
+                            persist();
+                        }
+                        show_toast_for_file(lang.file_reloaded());
+                    }
+                    FileChange::Conflict => {
+                        let toast = adw::Toast::new(lang.file_changed_on_disk());
+                        toast.set_button_label(Some(lang.btn_reload()));
+
+                        let doc_for_reload = doc.clone();
+                        let overlay_for_reload = toast_overlay_for_conflict.clone();
+                        let refresh_for_reload = refresh_for_file.clone();
+                        let persist_for_reload = persist_for_file.clone();
+                        let show_toast_for_reload = show_toast_for_file.clone();
+                        let settings_for_reload = settings_for_file.clone();
+
+                        toast.connect_button_clicked(move |_| {
+                            match doc_for_reload.reload_from_disk() {
+                                Ok(()) => {
+                                    if let Some(refresh) = refresh_for_reload.upgrade() {
+                                        refresh();
+                                    }
+                                    if let Some(persist) = persist_for_reload.upgrade() {
+                                        persist();
+                                    }
+                                }
+                                Err(error) => {
+                                    let lang = Language::from_code(
+                                        &settings_for_reload.borrow().language,
+                                    );
+                                    show_toast_for_reload(&format!(
+                                        "{}: {error}",
+                                        lang.error_reload_file()
+                                    ));
+                                }
+                            }
+                        });
+                        overlay_for_reload.add_toast(toast);
+                    }
+                }
+            }));
+
             // Изменение текста активной вкладки должно сразу обновить
             // точку в заголовке и подсветку кнопки «Сохранить».
             let weak_doc = Rc::downgrade(&doc);
             let tab_view_for_change = tab_view.clone();
             let refresh_for_change = refresh_active_ui.clone();
+            let docs_for_recovery_change = docs_for_recovery.clone();
+            let recovery_scheduled_for_buffer = recovery_scheduled_for_change.clone();
             doc.buffer.connect_changed(move |_| {
                 if let Some(doc) = weak_doc.upgrade() {
                     let is_active = tab_view_for_change
@@ -307,6 +386,15 @@ pub fn build_window(
                         .unwrap_or(false);
                     if is_active {
                         refresh_for_change();
+                    }
+
+                    // Черновики безымянных вкладок сохраняем с задержкой,
+                    // чтобы не писать файл на каждый символ.
+                    if doc.current_file.borrow().is_none() {
+                        schedule_recovery_save(
+                            docs_for_recovery_change.clone(),
+                            recovery_scheduled_for_buffer.clone(),
+                        );
                     }
                 }
             });
@@ -458,6 +546,7 @@ pub fn build_window(
         let settings = settings.clone();
         let show_toast = show_toast.clone();
         let last_open_directory = last_open_directory.clone();
+        let save_recovery_now = save_recovery_now.clone();
 
         Rc::new(move |save_as: bool| {
             let Some(doc) = active_document(&tab_view, &docs) else {
@@ -469,6 +558,7 @@ pub fn build_window(
             let show_toast = show_toast.clone();
             let last_open_directory = last_open_directory.clone();
             let doc_for_directory = doc.clone();
+            let save_recovery_for_save = save_recovery_now.clone();
             save_document(
                 &window,
                 &doc,
@@ -483,6 +573,7 @@ pub fn build_window(
                         {
                             *last_open_directory.borrow_mut() = Some(directory);
                         }
+                        save_recovery_for_save();
                         persist_session();
                         refresh_active_ui();
                     }
@@ -584,6 +675,7 @@ pub fn build_window(
     }
 
     // --- Восстановление сессии / начальных файлов ---
+    let recovery_drafts = recovery::load();
     let mut opened_pages: Vec<adw::TabPage> = Vec::new();
     let mut selected_page: Option<adw::TabPage> = None;
 
@@ -616,6 +708,27 @@ pub fn build_window(
                 opened_pages.push(page);
             }
         }
+    }
+
+    let mut recovered_count = 0usize;
+    for draft in recovery_drafts {
+        if let Some(page) = add_document(None, false) {
+            if let Some(doc) = docs
+                .borrow()
+                .iter()
+                .find(|doc| doc.matches_page(&page))
+                .cloned()
+            {
+                doc.restore_draft(&draft.content, draft.cursor_line, draft.cursor_column);
+                recovered_count += 1;
+            }
+            opened_pages.push(page.clone());
+            selected_page = Some(page);
+        }
+    }
+    if recovered_count > 0 {
+        let lang = Language::from_code(&settings.borrow().language);
+        show_toast(&lang.drafts_recovered(recovered_count));
     }
 
     if opened_pages.is_empty() {
@@ -671,6 +784,7 @@ pub fn build_window(
         let persist_session = persist_session.clone();
         let refresh_active_ui = refresh_active_ui.clone();
         let show_toast_for_close_page = show_toast.clone();
+        let save_recovery_now = save_recovery_now.clone();
 
         tab_view.connect_close_page(move |view, page| {
             let doc = docs
@@ -705,6 +819,7 @@ pub fn build_window(
             let refresh_for_save = refresh_active_ui.clone();
             let show_toast_for_save = show_toast_for_close_page.clone();
             let settings_for_save = settings.clone();
+            let save_recovery_for_save = save_recovery_now.clone();
 
             show_unsaved_changes_dialog(
                 &window,
@@ -729,6 +844,7 @@ pub fn build_window(
                         false,
                         Rc::new(move |result| match result {
                             Ok(true) => {
+                                save_recovery_for_save();
                                 view_for_save.close_page_finish(&page_for_save, true);
                                 persist_for_save();
                                 refresh_for_save();
@@ -761,6 +877,7 @@ pub fn build_window(
         let refresh_active_ui = refresh_active_ui.clone();
         let is_closing = is_closing.clone();
         let closed_tabs = closed_tabs.clone();
+        let save_recovery_now = save_recovery_now.clone();
 
         tab_view.connect_page_detached(move |_, page, _| {
             // При закрытии окна вкладки отсоединяются автоматически; сессию
@@ -787,6 +904,7 @@ pub fn build_window(
                 doc.export_state(&mut settings.borrow_mut());
             }
 
+            save_recovery_now();
             persist_session();
             refresh_active_ui();
 
@@ -833,6 +951,7 @@ pub fn build_window(
                 is_closing.set(true);
                 persist_session();
                 save_window_geometry(win);
+                recovery::clear();
                 return glib::Propagation::Proceed;
             }
 
@@ -865,6 +984,7 @@ pub fn build_window(
                     closing_discard.set(true);
                     persist_discard();
                     geom_discard(&win_for_discard);
+                    recovery::clear();
                     force_discard.set(true);
                     win_for_discard.close();
                 },
@@ -881,6 +1001,7 @@ pub fn build_window(
                                 closing_save.set(true);
                                 persist_save();
                                 geom_save(&win);
+                                recovery::clear();
                                 force_save.set(true);
                                 win.close();
                             }
@@ -925,6 +1046,51 @@ pub fn build_window(
     app.set_accels_for_action("win.close", &["<Control>q", "<Control>F4"]);
 
     window
+}
+
+/// Собирает черновики всех безымянных документов.
+fn collect_recovery_drafts(docs: &Rc<RefCell<Vec<Rc<Document>>>>) -> Vec<RecoveryDraft> {
+    docs.borrow()
+        .iter()
+        .filter(|doc| doc.current_file.borrow().is_none())
+        .filter_map(|doc| {
+            let text = doc
+                .buffer
+                .text(&doc.buffer.start_iter(), &doc.buffer.end_iter(), false);
+            // Пустые безымянные вкладки не представляют ценности.
+            if text.is_empty() {
+                return None;
+            }
+
+            let insert_mark = doc.buffer.get_insert();
+            let iter = doc.buffer.iter_at_mark(&insert_mark);
+            Some(RecoveryDraft {
+                content: text.to_string(),
+                cursor_line: iter.line().max(0) as usize,
+                cursor_column: iter.line_offset().max(0) as usize,
+            })
+        })
+        .collect()
+}
+
+/// Планирует отложенную запись recovery.json.
+///
+/// `Weak` на список документов не создает цикл: буферный обработчик
+/// документа не удерживает окно и все вкладки.
+fn schedule_recovery_save(
+    docs: Weak<RefCell<Vec<Rc<Document>>>>,
+    scheduled: Rc<Cell<bool>>,
+) {
+    if scheduled.replace(true) {
+        return;
+    }
+
+    glib::timeout_add_seconds_local_once(1, move || {
+        scheduled.set(false);
+        if let Some(docs) = docs.upgrade() {
+            recovery::save(&collect_recovery_drafts(&docs));
+        }
+    });
 }
 
 #[cfg(test)]

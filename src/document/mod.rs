@@ -278,6 +278,15 @@ const SCROLL_TRACKER_SCRIPT: &str = r#"
 })();
 "#;
 
+/// Причина уведомления об изменении файла на диске.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileChange {
+    /// Файл изменился, несохранённых правок не было — документ перезагружен.
+    Reloaded,
+    /// Файл изменился, но в документе есть несохранённые правки.
+    Conflict,
+}
+
 /// Состояние и виджеты одного открытого документа.
 ///
 /// Поля намеренно открыты для чтения из `window.rs`: окно управляет заголовком,
@@ -365,6 +374,14 @@ pub struct Document {
     /// Была ли для файла сохранена позиция просмотра (влияет на выбор
     /// между восстановлением прокрутки и прокруткой к курсору).
     had_saved_view_state: Cell<bool>,
+
+    /// Монитор изменений файла на диске. Хранится здесь, чтобы не дать
+    /// GObject-сигналу монитора быть уничтоженным вместе с локальной копией.
+    file_monitor: RefCell<Option<gio::FileMonitor>>,
+    /// Обработчик, который окно устанавливает для показа toast-уведомлений.
+    file_change_handler: RefCell<Option<Rc<dyn Fn(FileChange)>>>,
+    /// Защита от повторных toast'ов при серии событий от одного сохранения.
+    external_conflict_notified: Cell<bool>,
 }
 
 impl Document {
@@ -601,6 +618,9 @@ impl Document {
             web_view,
             preview_scroll,
             had_saved_view_state: Cell::new(false),
+            file_monitor: RefCell::new(None),
+            file_change_handler: RefCell::new(None),
+            external_conflict_notified: Cell::new(false),
         });
 
         doc.setup_handlers(
@@ -965,7 +985,7 @@ impl Document {
     }
 
     /// Сохраняет документ по уже известному пути.
-    pub fn save_existing(&self) -> Result<(), String> {
+    pub fn save_existing(self: &Rc<Self>) -> Result<(), String> {
         let path = self
             .current_file
             .borrow()
@@ -975,7 +995,7 @@ impl Document {
     }
 
     /// Сохраняет документ по указанному пути и делает его текущим файлом.
-    pub fn save_to(&self, path: &Path) -> Result<(), String> {
+    pub fn save_to(self: &Rc<Self>, path: &Path) -> Result<(), String> {
         let start = self.buffer.start_iter();
         let end = self.buffer.end_iter();
         let text = self.buffer.text(&start, &end, false);
@@ -985,8 +1005,173 @@ impl Document {
 
         *self.current_file.borrow_mut() = Some(path.to_path_buf());
         self.is_modified.set(false);
+        self.external_conflict_notified.set(false);
         self.update_tab_title();
+        self.restart_file_monitor();
         Ok(())
+    }
+
+    /// Подписывается на изменения текущего файла на диске.
+    ///
+    /// Окно передает обработчик, чтобы показать toast и, при конфликте,
+    /// предложить кнопку «Перезагрузить».
+    pub fn watch_file(self: &Rc<Self>, handler: Rc<dyn Fn(FileChange)>) {
+        *self.file_change_handler.borrow_mut() = Some(handler);
+        self.restart_file_monitor();
+    }
+
+    /// Пересоздает `gio::FileMonitor` для текущего пути.
+    ///
+    /// Вызывается после «Сохранить как», когда у документа появляется
+    /// новый файл, а также при установке обработчика окна.
+    fn restart_file_monitor(self: &Rc<Self>) {
+        *self.file_monitor.borrow_mut() = None;
+
+        let Some(path) = self.current_file.borrow().clone() else {
+            return;
+        };
+        let Some(handler) = self.file_change_handler.borrow().clone() else {
+            return;
+        };
+
+        let file = gio::File::for_path(&path);
+        let Ok(monitor) = file.monitor_file(
+            gio::FileMonitorFlags::WATCH_MOVES,
+            gio::Cancellable::NONE,
+        ) else {
+            return;
+        };
+
+        let weak_doc = Rc::downgrade(self);
+        monitor.connect_changed(move |_, _, _, event| {
+            // Удаление и размонтирование не пытаемся читать: файла может
+            // уже не быть. Атомарные сохранения приходят как Changed/Created
+            // или Moved/Renamed.
+            if matches!(
+                event,
+                gio::FileMonitorEvent::Deleted
+                    | gio::FileMonitorEvent::MovedOut
+                    | gio::FileMonitorEvent::PreUnmount
+                    | gio::FileMonitorEvent::Unmounted
+                    | gio::FileMonitorEvent::AttributeChanged
+            ) {
+                return;
+            }
+
+            let Some(doc) = weak_doc.upgrade() else {
+                return;
+            };
+            let Some(path) = doc.current_file.borrow().clone() else {
+                return;
+            };
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                return;
+            };
+
+            let current = doc
+                .buffer
+                .text(&doc.buffer.start_iter(), &doc.buffer.end_iter(), false);
+            if content == current {
+                // Это событие от нашего же сохранения — ничего не делаем.
+                return;
+            }
+
+            if doc.is_modified.get() {
+                if !doc.external_conflict_notified.get() {
+                    doc.external_conflict_notified.set(true);
+                    handler(FileChange::Conflict);
+                }
+                return;
+            }
+
+            match doc.reload_from_disk() {
+                Ok(()) => {
+                    doc.external_conflict_notified.set(false);
+                    handler(FileChange::Reloaded);
+                }
+                Err(_) => {
+                    if !doc.external_conflict_notified.get() {
+                        doc.external_conflict_notified.set(true);
+                        handler(FileChange::Conflict);
+                    }
+                }
+            }
+        });
+
+        *self.file_monitor.borrow_mut() = Some(monitor);
+    }
+
+    /// Перечитывает файл с диска, сохраняя курсор и режим просмотра.
+    ///
+    /// Если содержимое уже совпадает с буфером, документ не перезагружается.
+    pub fn reload_from_disk(&self) -> Result<(), String> {
+        let path = self
+            .current_file
+            .borrow()
+            .clone()
+            .ok_or_else(|| "document has no file path".to_string())?;
+        let content = std::fs::read_to_string(&path)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+
+        let current = self
+            .buffer
+            .text(&self.buffer.start_iter(), &self.buffer.end_iter(), false);
+        if current == content {
+            self.is_modified.set(false);
+            self.update_tab_title();
+            return Ok(());
+        }
+
+        let insert_mark = self.buffer.get_insert();
+        let cursor = self.buffer.iter_at_mark(&insert_mark);
+        let cursor_line = cursor.line().max(0);
+        let cursor_column = cursor.line_offset().max(0);
+
+        self.bulk_editing.set(true);
+        self.buffer.set_text(&content);
+        self.bulk_editing.set(false);
+        highlighter::highlight_markdown_buffer(&self.buffer);
+
+        let line_count = self.buffer.line_count();
+        let target_line = cursor_line.min(line_count.saturating_sub(1)).max(0);
+        let mut iter = self
+            .buffer
+            .iter_at_line(target_line)
+            .unwrap_or_else(|| self.buffer.start_iter());
+        let valid_column = cursor_column.min(iter.chars_in_line()).max(0);
+        iter.set_line_offset(valid_column);
+        self.buffer.place_cursor(&iter);
+
+        self.is_modified.set(false);
+        self.external_conflict_notified.set(false);
+        self.update_tab_title();
+        if self.is_preview_active.get() {
+            self.refresh_preview();
+        }
+        schedule_cursor_scroll(&self.text_view, &self.editor_scroll);
+        Ok(())
+    }
+
+    /// Восстанавливает содержимое безымянного черновика после сбоя.
+    pub fn restore_draft(&self, content: &str, line: usize, column: usize) {
+        self.bulk_editing.set(true);
+        self.buffer.set_text(content);
+        self.bulk_editing.set(false);
+        highlighter::highlight_markdown_buffer(&self.buffer);
+
+        let line_count = self.buffer.line_count();
+        let target_line = (line as i32).min(line_count.saturating_sub(1)).max(0);
+        let mut iter = self
+            .buffer
+            .iter_at_line(target_line)
+            .unwrap_or_else(|| self.buffer.start_iter());
+        let valid_column = (column as i32).min(iter.chars_in_line()).max(0);
+        iter.set_line_offset(valid_column);
+        self.buffer.place_cursor(&iter);
+
+        self.is_modified.set(true);
+        self.update_tab_title();
+        schedule_cursor_scroll(&self.text_view, &self.editor_scroll);
     }
 
     /// Экспортирует позицию курсора и прокрутки в общие настройки.

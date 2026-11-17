@@ -46,6 +46,9 @@ The main goal of the project is to serve as a clear, practical guide to building
   - Data loss protection: a confirmation dialog (`adw::MessageDialog`) when closing a tab or window with unsaved changes. When closing the window, a "Save All" button is available.
   - Close a tab with `Ctrl+W`; close the window and exit the application with `Ctrl+Q` or `Ctrl+F4`.
   - **Window state and size memory**: saves the maximized state and exact dimensions (width/height).
+- **Reliability**:
+  - **Reaction to external file changes**: a `gio::FileMonitor` watches every open file. If the file changes externally and the document has no unsaved edits, Aster automatically reloads it and shows a notification. If there are unsaved edits, a toast "File changed on disk" appears with a "Reload" button — editor contents are never silently lost.
+  - **Recovery of untitled tabs after a crash**: the contents of unsaved untitled tabs are saved to `~/.local/share/aster/recovery.json` with a one-second debounce after the last edit. After an abnormal exit, drafts are restored on the next launch as modified untitled tabs. On a normal application exit, the recovery file is deleted.
 - **Search and replace (`Ctrl+F`, `Ctrl+R`)**:
   - Search bar with highlighting of all occurrences; the current match is highlighted with higher contrast.
   - An `N of M` counter, previous/next buttons, `Enter` / `Shift+Enter`, and cyclic navigation.
@@ -174,8 +177,8 @@ To install icons in PNG formats, the script uses `rsvg-convert` or Python bindin
 ### 4. Building the release archive
 
 ```bash
-# Prepare a v0.3.0 release with one command
-./package-release.sh v0.3.0
+# Prepare a v0.6.0 release with one command
+./package-release.sh v0.6.0
 
 # Without an argument, the current version from VERSION is used
 ./package-release.sh
@@ -229,6 +232,7 @@ The source code is thoroughly commented in Russian:
 - [`src/i18n.rs`](src/i18n.rs) — typed internationalization and UI translations (Russian and English).
 - [`src/renderer.rs`](src/renderer.rs) — Markdown parsing with GFM flags via `pulldown-cmark` and injection of `github-markdown-css` into the embedded HTML template.
 - [`src/shortcuts.rs`](src/shortcuts.rs) — layout-independent mapping of hardware keycodes to Latin shortcuts (Wayland/X11 fallback).
+- [`src/recovery.rs`](src/recovery.rs) — crash-time persistence and restoration of untitled tab drafts.
 - [`src/settings.rs`](src/settings.rs) — persistence of settings structure, window geometry, scroll positions, and the tab list as JSON via `serde` and the `dirs` crate for XDG Base Directory support.
 - [`install.sh`](install.sh) — application installation and removal: build, `~/.local/bin`, SVG/PNG icons, desktop entry, and desktop shortcut.
 - [`package-release.sh`](package-release.sh) — version check, release build, `strip`, `tar.gz`, and SHA-256 checksum.

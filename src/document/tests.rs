@@ -153,6 +153,24 @@ use super::*;
     }
 
     #[gtk4::test]
+    fn test_restore_draft_sets_content_and_modified_state() {
+        let settings = Rc::new(RefCell::new(AppSettings::default()));
+        let doc = Document::new(settings, None, false).expect("create document");
+
+        doc.restore_draft("first\nsecond line", 1, 3);
+
+        let text = doc
+            .buffer
+            .text(&doc.buffer.start_iter(), &doc.buffer.end_iter(), false);
+        assert_eq!(text.as_str(), "first\nsecond line");
+        assert!(doc.is_modified.get());
+
+        let cursor = doc.buffer.iter_at_mark(&doc.buffer.get_insert());
+        assert_eq!(cursor.line(), 1);
+        assert_eq!(cursor.line_offset(), 3);
+    }
+
+    #[gtk4::test]
     fn test_document_is_freed_after_drop() {
         let settings = Rc::new(RefCell::new(AppSettings::default()));
         let doc = Document::new(settings, None, false).expect("create document");

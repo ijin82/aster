@@ -28,6 +28,7 @@
      - `document/mod.rs` — модель и состояние одной вкладки.
      - `document/search.rs`, `editor.rs`, `gutter.rs`, `links.rs`, `tests.rs` — поиск/замена, клавиатура, номера строк, ссылки и тесты.
      - `renderer.rs` — генерация HTML/CSS для GitHub Markdown.
+     - `recovery.rs` — аварийное сохранение черновиков безымянных вкладок.
      - `settings.rs` — модель конфигурации и персистентность (XDG).
      - `highlighter.rs`, `i18n.rs` — подсветка Markdown и переводы.
      - `shortcuts.rs` — перевод hardware keycode в латинские хоткеи для любой раскладки.

@@ -304,6 +304,41 @@ impl Language {
         }
     }
 
+    pub fn error_reload_file(&self) -> &'static str {
+        match self {
+            Language::Russian => "Не удалось перезагрузить файл",
+            Language::English => "Could not reload file",
+        }
+    }
+
+    pub fn file_changed_on_disk(&self) -> &'static str {
+        match self {
+            Language::Russian => "Файл изменён на диске",
+            Language::English => "File changed on disk",
+        }
+    }
+
+    pub fn file_reloaded(&self) -> &'static str {
+        match self {
+            Language::Russian => "Файл перезагружен с диска",
+            Language::English => "File reloaded from disk",
+        }
+    }
+
+    pub fn btn_reload(&self) -> &'static str {
+        match self {
+            Language::Russian => "Перезагрузить",
+            Language::English => "Reload",
+        }
+    }
+
+    pub fn drafts_recovered(&self, count: usize) -> String {
+        match self {
+            Language::Russian => format!("Восстановлено черновиков после сбоя: {count}"),
+            Language::English => format!("Recovered drafts after a crash: {count}"),
+        }
+    }
+
     pub fn dialog_open_title(&self) -> &'static str {
         match self {
             Language::Russian => "Открыть Markdown файлы",
