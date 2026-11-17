@@ -1384,10 +1384,20 @@ fn setup_editor_key_handling(text_view: &gtk4::TextView) {
             return glib::Propagation::Proceed;
         };
 
-        // Комбинации с Ctrl/Alt (например, Ctrl+Tab) не перехватываем.
-        if state.contains(gtk4::gdk::ModifierType::CONTROL_MASK)
-            || state.contains(gtk4::gdk::ModifierType::ALT_MASK)
-        {
+        let is_control = state.contains(gtk4::gdk::ModifierType::CONTROL_MASK);
+        let is_alt = state.contains(gtk4::gdk::ModifierType::ALT_MASK);
+
+        if is_control {
+            return glib::Propagation::Proceed;
+        }
+
+        if is_alt {
+            // Alt+D — дублировать текущую строку ниже. Остальные Alt-комбинации
+            // не перехватываем, чтобы не ломать системные/меню-акселераторы.
+            if keyval == gtk4::gdk::Key::d || keyval == gtk4::gdk::Key::D {
+                duplicate_current_line(&text_view.buffer());
+                return glib::Propagation::Stop;
+            }
             return glib::Propagation::Proceed;
         }
 
@@ -1439,6 +1449,57 @@ fn setup_editor_key_handling(text_view: &gtk4::TextView) {
     });
 
     text_view.add_controller(key_controller);
+}
+
+/// Дублирует строку под курсором и ставит курсор на копию.
+///
+/// Копия вставляется сразу после текущей строки. Если текущая строка
+/// последняя и файл не заканчивается переводом строки, перед копией
+/// добавляется `\n`. Курсор сохраняет колонку, поэтому повторный `Alt+D`
+/// последовательно создает копии.
+pub fn duplicate_current_line(buffer: &gtk4::TextBuffer) {
+    let insert_mark = buffer.get_insert();
+    let cursor = buffer.iter_at_mark(&insert_mark);
+    let line_index = cursor.line();
+    let column = cursor.line_offset();
+
+    let line_count = buffer.line_count();
+    let Some(line_start) = buffer.iter_at_line(line_index) else {
+        return;
+    };
+    let line_end = match buffer.iter_at_line(line_index + 1) {
+        Some(mut next_line_start) => {
+            next_line_start.backward_char();
+            next_line_start
+        }
+        None => buffer.end_iter(),
+    };
+    let line_text = buffer.text(&line_start, &line_end, false);
+    let line_len = line_text.chars().count() as i32;
+
+    buffer.begin_user_action();
+
+    // Для не последней строки вставляем копию перед началом следующей.
+    // Для последней строки без завершающего перевода строки добавляем его
+    // перед копией.
+    let duplicate_start = if line_index + 1 < line_count {
+        let Some(mut insert_at) = buffer.iter_at_line(line_index + 1) else {
+            buffer.end_user_action();
+            return;
+        };
+        let start_offset = insert_at.offset();
+        buffer.insert(&mut insert_at, &format!("{line_text}\n"));
+        start_offset
+    } else {
+        let mut insert_at = buffer.end_iter();
+        let end_offset = insert_at.offset();
+        buffer.insert(&mut insert_at, &format!("\n{line_text}"));
+        end_offset + 1
+    };
+
+    let mut new_cursor = buffer.iter_at_offset(duplicate_start + column.min(line_len));
+    buffer.place_cursor(&mut new_cursor);
+    buffer.end_user_action();
 }
 
 /// Добавляет два пробела в начало каждой выделенной строки или в позицию курсора.
@@ -1747,6 +1808,40 @@ mod tests {
             weak_text_view.upgrade().is_none(),
             "TextView is kept alive by editor signal handlers"
         );
+    }
+
+    #[gtk4::test]
+    fn test_duplicate_current_line() {
+        let buffer = gtk4::TextBuffer::new(None);
+        buffer.set_text("first\nsecond\nthird\n");
+
+        let cursor = buffer.iter_at_line_offset(1, 3).expect("line offset");
+        buffer.place_cursor(&cursor);
+        duplicate_current_line(&buffer);
+
+        let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+        assert_eq!(text.as_str(), "first\nsecond\nsecond\nthird\n");
+
+        let cursor = buffer.iter_at_mark(&buffer.get_insert());
+        assert_eq!(cursor.line(), 2);
+        assert_eq!(cursor.line_offset(), 3);
+    }
+
+    #[gtk4::test]
+    fn test_duplicate_last_line_without_trailing_newline() {
+        let buffer = gtk4::TextBuffer::new(None);
+        buffer.set_text("one\ntwo");
+
+        let cursor = buffer.iter_at_line_offset(1, 1).expect("line offset");
+        buffer.place_cursor(&cursor);
+        duplicate_current_line(&buffer);
+
+        let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+        assert_eq!(text.as_str(), "one\ntwo\ntwo");
+
+        let cursor = buffer.iter_at_mark(&buffer.get_insert());
+        assert_eq!(cursor.line(), 2);
+        assert_eq!(cursor.line_offset(), 1);
     }
 
     #[gtk4::test]
