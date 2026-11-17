@@ -12,6 +12,7 @@ use std::rc::Rc;
 use crate::document::Document;
 use crate::i18n::Language;
 use crate::settings::AppSettings;
+use crate::shortcuts;
 
 use super::dialogs::show_about_dialog;
 use super::preferences::show_preferences_dialog;
@@ -256,5 +257,38 @@ pub(crate) fn install_actions(ctx: ActionContext) -> gio::SimpleActionGroup {
 
 
 
+    install_shortcut_translation(&window);
+
     actions
+}
+
+
+/// Перехватывает Ctrl-комбинации и переводит hardware keycode в латинскую
+/// клавишу. Это делает хоткеи независимыми от активной раскладки.
+fn install_shortcut_translation(window: &adw::ApplicationWindow) {
+    let controller = gtk4::EventControllerKey::new();
+    controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
+
+    let window_for_controller = window.clone();
+    controller.connect_key_pressed(move |_, _keyval, keycode, state| {
+        if !state.contains(gtk4::gdk::ModifierType::CONTROL_MASK)
+            || state.contains(gtk4::gdk::ModifierType::ALT_MASK)
+        {
+            return glib::Propagation::Proceed;
+        }
+
+        let Some(key) = shortcuts::latin_char_for_keycode(keycode) else {
+            return glib::Propagation::Proceed;
+        };
+        let shift = state.contains(gtk4::gdk::ModifierType::SHIFT_MASK);
+        let Some(action) = shortcuts::ctrl_shortcut_action(key, shift) else {
+            return glib::Propagation::Proceed;
+        };
+
+        let _ =
+            gtk4::prelude::WidgetExt::activate_action(&window_for_controller, action, None);
+        glib::Propagation::Stop
+    });
+
+    window.add_controller(controller);
 }

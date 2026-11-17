@@ -26,6 +26,7 @@ use crate::highlighter;
 use crate::i18n::Language;
 use crate::renderer;
 use crate::settings::{AppSettings, FileViewState};
+use crate::shortcuts;
 
 /// Имя обработчика JavaScript-сообщений, через который WebKit сообщает
 /// актуальную позицию прокрутки предпросмотра.
@@ -2078,7 +2079,7 @@ fn setup_editor_key_handling(text_view: &gtk4::TextView) {
     // WeakRef разрывает цикл TextView -> controller -> handler -> TextView.
     let text_view_weak = text_view.downgrade();
 
-    key_controller.connect_key_pressed(move |_, keyval, _keycode, state| {
+    key_controller.connect_key_pressed(move |_, keyval, keycode, state| {
         let Some(text_view) = text_view_weak.upgrade() else {
             return glib::Propagation::Proceed;
         };
@@ -2091,9 +2092,12 @@ fn setup_editor_key_handling(text_view: &gtk4::TextView) {
         }
 
         if is_alt {
-            // Alt+D — дублировать текущую строку ниже. Остальные Alt-комбинации
-            // не перехватываем, чтобы не ломать системные/меню-акселераторы.
-            if keyval == gtk4::gdk::Key::d || keyval == gtk4::gdk::Key::D {
+            // Alt+D — дублировать текущую строку ниже. keycode переводится
+            // в латинскую клавишу, поэтому комбинация работает и в русской
+            // раскладке. Остальные Alt-комбинации не перехватываем.
+            let shortcut_key = shortcuts::latin_char_for_keycode(keycode)
+                .or_else(|| keyval.to_unicode().map(|ch| ch.to_ascii_lowercase()));
+            if shortcut_key == Some('d') {
                 duplicate_current_line(&text_view.buffer());
                 return glib::Propagation::Stop;
             }

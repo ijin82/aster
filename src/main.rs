@@ -12,6 +12,7 @@ mod highlighter;
 mod i18n;
 mod renderer;
 mod settings;
+mod shortcuts;
 mod window;
 
 /// Уникальный идентификатор приложения по стандарту Reverse-DNS (D-Bus ID).

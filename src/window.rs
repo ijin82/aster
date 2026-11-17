@@ -922,6 +922,7 @@ pub fn build_window(
     app.set_accels_for_action("win.toggle_preview", &["<Control>e"]);
     app.set_accels_for_action("win.find", &["<Control>f"]);
     app.set_accels_for_action("win.find_replace", &["<Control>r"]);
+    app.set_accels_for_action("win.preferences", &["<Control>comma"]);
     app.set_accels_for_action("win.close", &["<Control>q", "<Control>F4"]);
 
     window

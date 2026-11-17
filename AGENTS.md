@@ -27,6 +27,7 @@
      - `renderer.rs` — генерация HTML/CSS для GitHub Markdown.
      - `settings.rs` — модель конфигурации и персистентность (XDG).
      - `highlighter.rs`, `i18n.rs` — подсветка Markdown и переводы.
+     - `shortcuts.rs` — перевод hardware keycode в латинские хоткеи для любой раскладки.
    - Иконка: `assets/aster.svg` (SVG-исходник, из него `install.sh` генерирует PNG).
    - Скрипты: `install.sh` (установка/удаление), `package-release.sh` (релизный архив), `Makefile` (краткие команды).
    - Аккуратная обработка ошибок (без беспричинных `unwrap`).
