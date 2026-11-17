@@ -1,12 +1,13 @@
 //! Главный модуль приложения `rmd-view`.
 //!
-//! Инициализирует приложение на базе `adw::Application` (библиотека Libadwaita),
-//! обрабатывает сигналы активации (`activate`) и открытия файлов (`open`),
-//! а также разбирает переданные аргументы командной строки.
+//! Инициализирует приложение на базе `adw::Application`, обрабатывает сигналы
+//! `activate` и `open`, а также восстанавливает прошлую сессию (открытые
+//! вкладки) при обычном запуске без аргументов.
 
 use adw::prelude::*;
-use std::env;
+use gtk4::glib::variant::ToVariant;
 use std::path::PathBuf;
+mod document;
 mod highlighter;
 mod i18n;
 mod renderer;
@@ -17,37 +18,45 @@ mod window;
 const APP_ID: &str = "io.github.rmd_view";
 
 fn main() {
-    // Создаем экземпляр приложения Adwaita с поддержкой открытия файлов (HANDLES_OPEN)
+    // HANDLES_OPEN позволяет GApplication самому разобрать пути из командной
+    // строки и передать их в сигнал `open`, не дублируя их ручным разбором env::args.
     let app = adw::Application::builder()
         .application_id(APP_ID)
         .flags(gtk4::gio::ApplicationFlags::HANDLES_OPEN)
         .build();
 
-    // Сигнал 'activate': вызывается при обычном запуске приложения без аргументов
+    // Обычный запуск без файлов: окно восстанавливает вкладки прошлой сессии.
     app.connect_activate(|app| {
-        let win = window::build_window(app, None);
-        win.present();
-    });
-
-    // Сигнал 'open': вызывается при открытии файлов через контекстное меню GNOME или D-Bus
-    app.connect_open(|app, files, _hint| {
-        let path = files.first().and_then(|f| f.path());
-        let win = window::build_window(app, path);
-        win.present();
-    });
-
-    // Обработка прямого аргумента пути из консоли: `rmd-view path/to/file.md`
-    let args: Vec<String> = env::args().collect();
-    if args.len() > 1 && !args[1].starts_with('-') {
-        let path = PathBuf::from(&args[1]);
-        if path.exists() {
-            app.connect_activate(move |app| {
-                let win = window::build_window(app, Some(path.clone()));
-                win.present();
-            });
+        if let Some(window) = app.active_window() {
+            window.present();
+            return;
         }
-    }
+        let win = window::build_window(app, Vec::new(), true);
+        win.present();
+    });
 
-    // Запускаем основной цикл событий GTK/GLib (event loop)
+    // Запуск с файлами (из терминала, файлового менеджера или по D-Bus).
+    app.connect_open(|app, files, _hint| {
+        let paths: Vec<PathBuf> = files.iter().filter_map(|file| file.path()).collect();
+        if paths.is_empty() {
+            return;
+        }
+
+        if let Some(window) = app.active_window() {
+            // В уже запущенном приложении каждый файл открывается в новой вкладке.
+            for path in paths {
+                let _ = window.activate_action(
+                    "win.open_document",
+                    Some(&path.to_string_lossy().to_string().to_variant()),
+                );
+            }
+            window.present();
+        } else {
+            let win = window::build_window(app, paths, false);
+            win.present();
+        }
+    });
+
+    // Запускаем основной цикл событий GTK/GLib (event loop).
     app.run();
 }

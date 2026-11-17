@@ -1,4 +1,4 @@
-use pulldown_cmark::{html, CowStr, Event, Options, Parser, Tag};
+use pulldown_cmark::{html, Options, Parser};
 
 /// Встроенная таблица стилей GitHub Markdown CSS.
 /// Включается непосредственно в бинарный файл во время компиляции через `include_str!`,
@@ -93,7 +93,7 @@ impl ThemePalette {
 }
 
 /// Преобразует сырой текст в формате Markdown в полноценный HTML-документ
-/// с выбранной цветовой палитрой, настраиваемыми отступами и якорями для точной привязки строк.
+/// с выбранной цветовой палитрой и настраиваемыми отступами.
 ///
 /// # Аргументы
 /// * `markdown_input` — исходный текст на языке разметки Markdown.
@@ -102,7 +102,6 @@ impl ThemePalette {
 /// * `font_size_px` — размер базового шрифта в пикселях.
 /// * `padding_percent` — процент боковых полей (по умолчанию 5%, ширина контента = 100 - 2 * padding).
 /// * `base_url` — опциональный базовый URI для разрешения локальных картинок.
-/// * `target_source_line` — опциональный индекс строки (0-based) для мгновенной фокусировки при открытии.
 pub fn render_markdown_to_html(
     markdown_input: &str,
     theme: &str,
@@ -110,7 +109,6 @@ pub fn render_markdown_to_html(
     font_size_px: u32,
     padding_percent: u32,
     base_url: Option<&str>,
-    target_source_line: Option<usize>,
 ) -> String {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
@@ -119,59 +117,9 @@ pub fn render_markdown_to_html(
     options.insert(Options::ENABLE_TASKLISTS);
     options.insert(Options::ENABLE_HEADING_ATTRIBUTES);
 
-    // Вычисляем байтовые смещения начал всех строк исходного текста для быстрого бинарного поиска
-    let line_starts: Vec<usize> = std::iter::once(0)
-        .chain(markdown_input.match_indices('\n').map(|(i, _)| i + 1))
-        .collect();
-
-    // Замыкание для определения 0-индексированного номера строки по байтовому смещению в markdown_input
-    let get_line = |pos: usize| -> usize {
-        match line_starts.binary_search(&pos) {
-            Ok(i) => i,
-            Err(i) => i.saturating_sub(1),
-        }
-    };
-
     let parser = Parser::new_ext(markdown_input, options);
-    let mut events = Vec::new();
-
-    // Внедряем невидимые маркеры строк (source-line-anchor) перед каждым блочным элементом.
-    // Это гарантирует, что любая строка исходного файла (включая пустые строки между разделами,
-    // строки внутри длинных списков, таблиц и блоков кода) связывается с соответствующим элементом DOM.
-    for (event, range) in parser.into_offset_iter() {
-        let start_line = get_line(range.start);
-        let end_line = get_line(range.end);
-
-        match &event {
-            Event::Start(Tag::Heading { .. })
-            | Event::Start(Tag::Paragraph)
-            | Event::Start(Tag::CodeBlock(..))
-            | Event::Start(Tag::Table(..))
-            | Event::Start(Tag::BlockQuote(..))
-            | Event::Rule => {
-                let anchor = format!(
-                    r#"<div class="source-line-anchor" data-line-start="{}" data-line-end="{}" style="height:0;margin:0;padding:0;border:none;overflow:hidden;"></div>"#,
-                    start_line, end_line
-                );
-                events.push(Event::InlineHtml(CowStr::from(anchor)));
-                events.push(event);
-            }
-            Event::Start(Tag::Item) => {
-                events.push(event);
-                let anchor = format!(
-                    r#"<span class="source-line-anchor" data-line-start="{}" data-line-end="{}" style="display:inline-block;width:0;height:0;margin:0;padding:0;border:none;overflow:hidden;vertical-align:top;"></span>"#,
-                    start_line, end_line
-                );
-                events.push(Event::InlineHtml(CowStr::from(anchor)));
-            }
-            _ => {
-                events.push(event);
-            }
-        }
-    }
-
     let mut html_output = String::new();
-    html::push_html(&mut html_output, events.into_iter());
+    html::push_html(&mut html_output, parser);
 
     let palette = ThemePalette::for_theme(theme, system_is_dark);
     let theme_mode = if palette.is_dark { "dark" } else { "light" };
@@ -183,11 +131,6 @@ pub fn render_markdown_to_html(
     let base_tag = match base_url {
         Some(url) => format!(r#"<base href="{url}">"#),
         None => String::new(),
-    };
-
-    let target_line_js = match target_source_line {
-        Some(l) => format!("{}", l),
-        None => "null".to_string(),
     };
 
     format!(
@@ -314,108 +257,6 @@ pub fn render_markdown_to_html(
 </head>
 <body class="markdown-body" data-theme="{theme_mode}">
 {html_output}
-<script>
-    // Глобальная функция центрирования документа на указанной строке Markdown-исходника.
-    // Ищет ближайший блочный элемент (или точный диапазон строк внутри блока) и выполняет центрирование.
-    window.__scrollToSourceLine = function(line) {{
-        function perform() {{
-            var anchors = Array.from(document.querySelectorAll('.source-line-anchor'));
-            if (!anchors.length) return;
-
-            var bestEl = null;
-            var minDiff = 99999999;
-            var bestProg = 0.5;
-
-            for (var i = 0; i < anchors.length; i++) {{
-                var a = anchors[i];
-                var s = parseInt(a.getAttribute('data-line-start') || '0', 10);
-                var e = parseInt(a.getAttribute('data-line-end') || s, 10);
-                var targetNode = a.nextElementSibling || a;
-
-                var diff = 0;
-                var prog = 0.5;
-                if (line < s) {{
-                    diff = s - line;
-                    prog = 0.0;
-                }} else if (line > e) {{
-                    diff = line - e;
-                    prog = 1.0;
-                }} else {{
-                    diff = 0;
-                    prog = (e > s) ? ((line - s) / (e - s)) : 0.5;
-                    bestEl = targetNode;
-                    bestProg = prog;
-                    break;
-                }}
-
-                if (diff < minDiff) {{
-                    minDiff = diff;
-                    bestEl = targetNode;
-                    bestProg = prog;
-                }}
-            }}
-
-            if (bestEl) {{
-                var rect = bestEl.getBoundingClientRect();
-                var targetY = window.scrollY + rect.top + (rect.height * bestProg) - (window.innerHeight / 2.0);
-                var maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
-                window.scrollTo({{
-                    top: Math.max(0, Math.min(maxScroll, targetY)),
-                    behavior: 'instant'
-                }});
-            }}
-        }}
-
-        // Запускаем сразу, а также через rAF и таймеры для защиты от сброса позиции скролла движком WebKit
-        perform();
-        requestAnimationFrame(perform);
-        setTimeout(perform, 30);
-        setTimeout(perform, 100);
-        setTimeout(perform, 250);
-    }};
-
-    // Возвращает номер строки (0-based) исходника, находящейся в центре текущей области просмотра WebKit
-    window.__getCenterSourceLine = function() {{
-        var anchors = Array.from(document.querySelectorAll('.source-line-anchor'));
-        if (!anchors.length) return -1;
-        var centerY = window.innerHeight / 2.0;
-        var bestLine = 0;
-        var minDistance = 99999999;
-
-        for (var i = 0; i < anchors.length; i++) {{
-            var a = anchors[i];
-            var el = a.nextElementSibling || a;
-            var rect = el.getBoundingClientRect();
-            var elMid = rect.top + (rect.height / 2.0);
-            var dist = Math.abs(elMid - centerY);
-
-            if (dist < minDistance) {{
-                minDistance = dist;
-                var s = parseInt(a.getAttribute('data-line-start') || '0', 10);
-                var e = parseInt(a.getAttribute('data-line-end') || s, 10);
-                if (rect.height > 20 && centerY >= rect.top && centerY <= rect.bottom && e > s) {{
-                    var ratio = (centerY - rect.top) / rect.height;
-                    bestLine = Math.round(s + ratio * (e - s));
-                }} else {{
-                    bestLine = s;
-                }}
-            }}
-        }}
-        return bestLine;
-    }};
-
-    // Если задана целевая строка, активируем переход к ней сразу при загрузке документа
-    var initialTarget = {target_line_js};
-    if (typeof initialTarget === 'number') {{
-        window.__scrollToSourceLine(initialTarget);
-        document.addEventListener('DOMContentLoaded', function() {{
-            window.__scrollToSourceLine(initialTarget);
-        }});
-        window.addEventListener('load', function() {{
-            window.__scrollToSourceLine(initialTarget);
-        }});
-    }}
-</script>
 </body>
 </html>"#,
         bg_default = palette.bg_default,
@@ -432,27 +273,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_render_with_source_anchors() {
+    fn test_render_markdown_html() {
         let md = "# Title\n\nParagraph 1\n\n- Item 1\n- Item 2\n\n```rust\nfn main() {}\n```\n";
-        let html = render_markdown_to_html(md, "light", false, 16, 5, None, Some(2));
-        assert!(html.contains("source-line-anchor"));
-        assert!(html.contains("window.__scrollToSourceLine"));
-        assert!(html.contains("window.__getCenterSourceLine"));
-        assert!(html.contains("data-line-start=\"0\"")); // Title
-        assert!(html.contains("data-line-start=\"2\"")); // Paragraph 1
-        assert!(html.contains("initialTarget = 2"));
+        let html = render_markdown_to_html(md, "light", false, 16, 5, None);
+        assert!(html.contains("<h1>Title</h1>"));
+        assert!(html.contains("<p>Paragraph 1</p>"));
+        assert!(html.contains("<li>Item 1</li>"));
+        assert!(html.contains("<pre><code class=\"language-rust\">"));
+        assert!(html.contains("class=\"markdown-body\""));
+        assert!(!html.contains("source-line-anchor"));
+        assert!(!html.contains("<script>"));
     }
 
     #[test]
-    fn test_vview_readme_line_137() {
-        if let Ok(content) = std::fs::read_to_string("/home/ijin/Work/vView/README.md") {
-            let html = render_markdown_to_html(&content, "dark", true, 16, 5, None, Some(136));
-            assert!(html.contains("source-line-anchor"));
-            assert!(html.contains("initialTarget = 136"));
-            // Убеждаемся, что строка 135 (### ALT Linux) получила якорь
-            assert!(html.contains(r#"data-line-start="135""#));
-            // И строка 137 (Run the following command...) получила якорь
-            assert!(html.contains(r#"data-line-start="137""#));
-        }
+    fn test_render_table_and_base_url() {
+        let md = "| A | B |\n|---|---|\n| 1 | 2 |\n";
+        let html = render_markdown_to_html(md, "dark", true, 16, 5, Some("file:///tmp/"));
+        assert!(html.contains("<table>"));
+        assert!(html.contains(r#"<base href="file:///tmp/">"#));
     }
 }

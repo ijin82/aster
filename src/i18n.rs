@@ -104,6 +104,20 @@ impl Language {
 
     // --- Пункты главного меню ---
 
+    pub fn menu_new_tab(&self) -> &'static str {
+        match self {
+            Language::Russian => "Новая вкладка",
+            Language::English => "New Tab",
+        }
+    }
+
+    pub fn menu_close_tab(&self) -> &'static str {
+        match self {
+            Language::Russian => "Закрыть вкладку",
+            Language::English => "Close Tab",
+        }
+    }
+
     pub fn menu_save_as(&self) -> &'static str {
         match self {
             Language::Russian => "Сохранить как...",
@@ -132,6 +146,64 @@ impl Language {
         }
     }
 
+    // --- Вкладки ---
+
+    pub fn tooltip_new_tab(&self) -> &'static str {
+        match self {
+            Language::Russian => "Новая вкладка (Ctrl+T)",
+            Language::English => "New tab (Ctrl+T)",
+        }
+    }
+
+    pub fn untitled_document(&self) -> &'static str {
+        match self {
+            Language::Russian => "Безымянный",
+            Language::English => "Untitled",
+        }
+    }
+
+    pub fn search_placeholder(&self) -> &'static str {
+        match self {
+            Language::Russian => "Поиск в документе…",
+            Language::English => "Search in document…",
+        }
+    }
+
+    pub fn tab_close_heading(&self) -> &'static str {
+        match self {
+            Language::Russian => "Закрыть вкладку без сохранения?",
+            Language::English => "Close tab without saving?",
+        }
+    }
+
+    pub fn tab_close_body(&self) -> &'static str {
+        match self {
+            Language::Russian => "В этом документе есть несохраненные изменения. Закрытие вкладки приведет к их потере.",
+            Language::English => "This document has unsaved changes. Closing the tab will discard them.",
+        }
+    }
+
+    pub fn unsaved_window_heading(&self) -> &'static str {
+        match self {
+            Language::Russian => "Закрыть приложение без сохранения?",
+            Language::English => "Close the application without saving?",
+        }
+    }
+
+    pub fn unsaved_window_body(&self) -> &'static str {
+        match self {
+            Language::Russian => "В одной или нескольких вкладках есть несохраненные изменения. Закрытие приложения приведет к их потере.",
+            Language::English => "One or more tabs have unsaved changes. Closing the application will discard them.",
+        }
+    }
+
+    pub fn btn_save_all(&self) -> &'static str {
+        match self {
+            Language::Russian => "Сохранить все",
+            Language::English => "Save All",
+        }
+    }
+
     // --- Диалоги открытия и сохранения файлов ---
 
     pub fn dialog_save_title(&self) -> &'static str {
@@ -152,36 +224,6 @@ impl Language {
         match self {
             Language::Russian => "Markdown (*.md, *.markdown, *.rmd)",
             Language::English => "Markdown (*.md, *.markdown, *.rmd)",
-        }
-    }
-
-    // --- Предупреждения о несохраненных изменениях ---
-
-    pub fn unsaved_open_heading(&self) -> &'static str {
-        match self {
-            Language::Russian => "Открыть другой файл?",
-            Language::English => "Open another file?",
-        }
-    }
-
-    pub fn unsaved_open_body(&self) -> &'static str {
-        match self {
-            Language::Russian => "В текущем файле есть несохраненные изменения. Открытие нового файла приведет к их потере.",
-            Language::English => "The current file has unsaved changes. Opening a new file will discard them.",
-        }
-    }
-
-    pub fn unsaved_close_heading(&self) -> &'static str {
-        match self {
-            Language::Russian => "Закрыть без сохранения?",
-            Language::English => "Close without saving?",
-        }
-    }
-
-    pub fn unsaved_close_body(&self) -> &'static str {
-        match self {
-            Language::Russian => "В документе есть несохраненные изменения. Закрытие приведет к их потере.",
-            Language::English => "The document has unsaved changes. Closing will discard them.",
         }
     }
 
