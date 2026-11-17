@@ -2,6 +2,8 @@
 
 ![Иконка Aster](assets/aster.svg)
 
+**Русский** · [English](README_en.md)
+
 **Aster** — это обучающее легковесное приложение на **Rust**, **GTK4**, **Libadwaita** и **WebKitGTK 6.0** для просмотра и редактирования Markdown-документов в стиле GNOME.
 
 [Другой файл](AGENTS.md)
@@ -184,8 +186,8 @@ Python-привязки PyGObject/Rsvg. Если их нет, устанавли
 Если версия передана аргументом (или через переменную `VERSION`), скрипт сам
 обновляет `VERSION`, `Cargo.toml` и `Cargo.lock` — вручную править файлы не
 нужно. Затем он проверяет вывод `aster --version`, собирает релиз, удаляет
-отладочные символы, складывает бинарник, `install.sh`, иконку, README и
-лицензию в `dist/aster-vX.Y.Z-linux-<arch>.tar.gz` и создает `.sha256`.
+отладочные символы, складывает бинарник, `install.sh`, иконку, `README.md`,
+`README_en.md` и лицензию в `dist/aster-vX.Y.Z-linux-<arch>.tar.gz` и создает `.sha256`.
 
 После подготовки релиза не забудьте закоммитить обновленные `VERSION`,
 `Cargo.toml` и `Cargo.lock`.

@@ -143,6 +143,7 @@ cp -p "assets/${APP_NAME}.svg" "${STAGE_DIR}/assets/${APP_NAME}.svg"
 echo "    + assets/${APP_NAME}.svg"
 
 copy_if_exists "README.md"
+copy_if_exists "README_en.md"
 copy_if_exists "LICENSE"
 copy_if_exists "VERSION"
 
