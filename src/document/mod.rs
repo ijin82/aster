@@ -15,6 +15,8 @@ use adw::prelude::*;
 use gtk4::gio;
 use gtk4::glib;
 use std::cell::{Cell, RefCell};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use webkit6::prelude::*;
@@ -380,8 +382,12 @@ pub struct Document {
     file_monitor: RefCell<Option<gio::FileMonitor>>,
     /// Обработчик, который окно устанавливает для показа toast-уведомлений.
     file_change_handler: RefCell<Option<Rc<dyn Fn(FileChange)>>>,
-    /// Защита от повторных toast'ов при серии событий от одного сохранения.
-    external_conflict_notified: Cell<bool>,
+    /// Хеш последней внешней версии файла, о которой уже показали toast.
+    ///
+    /// Позволяет не дублировать уведомление на серию событий `Changed` /
+    /// `ChangesDoneHint` от одного сохранения, но показать новый toast,
+    /// если файл изменили ещё раз, а пользователь старый toast не закрыл.
+    last_external_file_hash: RefCell<Option<u64>>,
 }
 
 impl Document {
@@ -620,7 +626,7 @@ impl Document {
             had_saved_view_state: Cell::new(false),
             file_monitor: RefCell::new(None),
             file_change_handler: RefCell::new(None),
-            external_conflict_notified: Cell::new(false),
+            last_external_file_hash: RefCell::new(None),
         });
 
         doc.setup_handlers(
@@ -1005,7 +1011,7 @@ impl Document {
 
         *self.current_file.borrow_mut() = Some(path.to_path_buf());
         self.is_modified.set(false);
-        self.external_conflict_notified.set(false);
+        *self.last_external_file_hash.borrow_mut() = None;
         self.update_tab_title();
         self.restart_file_monitor();
         Ok(())
@@ -1076,24 +1082,29 @@ impl Document {
                 return;
             }
 
+            // Хешируем именно внешнюю версию. Серия событий от одного
+            // сохранения даст один и тот же хеш и не создаст несколько toast.
+            let content_hash = {
+                let mut hasher = DefaultHasher::new();
+                content.hash(&mut hasher);
+                hasher.finish()
+            };
+            if *doc.last_external_file_hash.borrow() == Some(content_hash) {
+                return;
+            }
+            *doc.last_external_file_hash.borrow_mut() = Some(content_hash);
+
             if doc.is_modified.get() {
-                if !doc.external_conflict_notified.get() {
-                    doc.external_conflict_notified.set(true);
-                    handler(FileChange::Conflict);
-                }
+                handler(FileChange::Conflict);
                 return;
             }
 
             match doc.reload_from_disk() {
                 Ok(()) => {
-                    doc.external_conflict_notified.set(false);
                     handler(FileChange::Reloaded);
                 }
                 Err(_) => {
-                    if !doc.external_conflict_notified.get() {
-                        doc.external_conflict_notified.set(true);
-                        handler(FileChange::Conflict);
-                    }
+                    handler(FileChange::Conflict);
                 }
             }
         });
@@ -1143,7 +1154,7 @@ impl Document {
         self.buffer.place_cursor(&iter);
 
         self.is_modified.set(false);
-        self.external_conflict_notified.set(false);
+        *self.last_external_file_hash.borrow_mut() = None;
         self.update_tab_title();
         if self.is_preview_active.get() {
             self.refresh_preview();
@@ -1170,6 +1181,7 @@ impl Document {
         self.buffer.place_cursor(&iter);
 
         self.is_modified.set(true);
+        *self.last_external_file_hash.borrow_mut() = None;
         self.update_tab_title();
         schedule_cursor_scroll(&self.text_view, &self.editor_scroll);
     }
