@@ -881,7 +881,7 @@ impl Document {
         if self.had_saved_view_state.get() {
             self.schedule_editor_scroll();
         } else {
-            schedule_cursor_scroll(&self.text_view);
+            schedule_cursor_scroll(&self.text_view, &self.editor_scroll);
         }
 
         Ok(())
@@ -1504,8 +1504,29 @@ impl Document {
         );
 
         self.buffer.place_cursor(&match_start_iter);
-        self.text_view
-            .scroll_to_iter(&mut match_start_iter, 0.1, true, 0.0, 0.5);
+        self.scroll_editor_to_iter(&mut match_start_iter, 0.5);
+    }
+
+    /// Прокручивает редактор к итератору по вертикали, не сдвигая
+    /// горизонтальную позицию.
+    ///
+    /// `GtkTextView::scroll_to_iter` с `xalign = 0.0` даже при включенном
+    /// переносе строк пытается выровнять позицию по левому краю и может
+    /// сдвинуть горизонтальный adjustment. Тогда справа появляется пустая
+    /// полоса. После прокрутки возвращаем горизонтальную позицию в ноль.
+    fn scroll_editor_to_iter(&self, iter: &mut gtk4::TextIter, yalign: f64) {
+        self.text_view.scroll_to_iter(iter, 0.1, true, 0.0, yalign);
+        self.reset_editor_horizontal_scroll();
+    }
+
+    /// Возвращает горизонтальную прокрутку редактора в начало.
+    fn reset_editor_horizontal_scroll(&self) {
+        let adjustment = self.editor_scroll.hadjustment();
+        adjustment.set_value(0.0);
+
+        // Повторно в idle: GTK может пересчитать adjustment после текущей
+        // итерации главного цикла.
+        glib::idle_add_local_once(move || adjustment.set_value(0.0));
     }
 
     /// Убирает подсветку поиска при закрытии панели, сохраняя запрос.
@@ -2025,8 +2046,12 @@ fn apply_restored_cursor_position(
 ///
 /// На момент загрузки файла окно еще может не иметь финальной разметки,
 /// поэтому прокрутка выполняется через `idle_add_local_once`.
-fn schedule_cursor_scroll(text_view: &gtk4::TextView) {
+fn schedule_cursor_scroll(
+    text_view: &gtk4::TextView,
+    editor_scroll: &gtk4::ScrolledWindow,
+) {
     let text_view_clone = text_view.clone();
+    let editor_scroll_clone = editor_scroll.clone();
     glib::idle_add_local_once(move || {
         let buf = text_view_clone.buffer();
         let insert_mark = buf.get_insert();
@@ -2036,6 +2061,12 @@ fn schedule_cursor_scroll(text_view: &gtk4::TextView) {
         } else {
             text_view_clone.scroll_to_iter(&mut iter, 0.0, true, 0.0, 0.5);
         }
+
+        // В режиме переноса строк горизонтальная прокрутка не должна
+        // сдвигать текст: это оставляет пустую полосу справа.
+        let adjustment = editor_scroll_clone.hadjustment();
+        adjustment.set_value(0.0);
+        glib::idle_add_local_once(move || adjustment.set_value(0.0));
     });
 }
 
