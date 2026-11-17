@@ -450,9 +450,8 @@ impl Document {
         // 4. После загрузки HTML восстанавливаем позицию прокрутки предпросмотра.
         //    `pending_preview_scroll` защищает от гонки со скриптом отслеживания,
         //    который может успеть сообщить 0 до программной прокрутки.
-        let web_view_for_load = self.web_view.clone();
         let pending_for_load = pending_preview_scroll.clone();
-        self.web_view.connect_load_changed(move |_view, event| {
+        self.web_view.connect_load_changed(move |view, event| {
             if event == webkit6::LoadEvent::Finished {
                 if let Some(y) = pending_for_load.take() {
                     let script = format!(
@@ -465,7 +464,7 @@ impl Document {
                         }})();",
                         y.max(0.0)
                     );
-                    web_view_for_load.evaluate_javascript(
+                    view.evaluate_javascript(
                         &script,
                         None,
                         None,
@@ -493,11 +492,10 @@ impl Document {
     /// открываются системным обработчиком, а сам WebView не уходит
     /// с текущего HTML-документа.
     fn setup_link_policy(self: &Rc<Self>) {
-        let web_view = self.web_view.clone();
         let weak_doc = Rc::downgrade(self);
 
         self.web_view.connect_decide_policy(
-            move |_web_view, decision, decision_type| {
+            move |web_view, decision, decision_type| {
                 let is_navigation = decision_type
                     == webkit6::PolicyDecisionType::NavigationAction
                     || decision_type == webkit6::PolicyDecisionType::NewWindowAction;
@@ -1220,11 +1218,17 @@ fn setup_line_numbers_gutter(
     let gutter = gtk4::DrawingArea::new();
     gutter.set_content_width(48);
 
-    let text_view_clone = text_view.clone();
+    // WeakRef разрывает цикл TextView -> gutter -> draw func -> TextView.
+    // Иначе каждая закрытая вкладка навсегда удерживала бы свой TextView.
+    let text_view_weak = text_view.downgrade();
     let settings_for_draw = settings.clone();
 
     gutter.set_draw_func(move |area, cr, width, height| {
-        let buffer = text_view_clone.buffer();
+        let Some(text_view) = text_view_weak.upgrade() else {
+            return;
+        };
+
+        let buffer = text_view.buffer();
         let total_lines = buffer.line_count();
 
         // Ширина колонки зависит от количества цифр в номере строки.
@@ -1266,12 +1270,12 @@ fn setup_line_numbers_gutter(
         let _ = cr.stroke();
 
         let (_, top_buf_y) =
-            text_view_clone.window_to_buffer_coords(gtk4::TextWindowType::Left, 0, 0);
+            text_view.window_to_buffer_coords(gtk4::TextWindowType::Left, 0, 0);
         let (_, bottom_buf_y) =
-            text_view_clone.window_to_buffer_coords(gtk4::TextWindowType::Left, 0, height);
+            text_view.window_to_buffer_coords(gtk4::TextWindowType::Left, 0, height);
 
         let top_buf_y = top_buf_y.max(0);
-        let (mut iter, _) = text_view_clone.line_at_y(top_buf_y);
+        let (mut iter, _) = text_view.line_at_y(top_buf_y);
 
         let font_size = (settings.editor_font_size as f64 * 0.85).max(9.0);
         let font_family = settings.editor_font_family.clone();
@@ -1284,9 +1288,9 @@ fn setup_line_numbers_gutter(
         cr.set_source_rgb(num_r, num_g, num_b);
 
         loop {
-            let (y_buf, h_buf) = text_view_clone.line_yrange(&iter);
+            let (y_buf, h_buf) = text_view.line_yrange(&iter);
             let (_, win_y) =
-                text_view_clone.buffer_to_window_coords(gtk4::TextWindowType::Left, 0, y_buf);
+                text_view.buffer_to_window_coords(gtk4::TextWindowType::Left, 0, y_buf);
 
             let line_num = iter.line() + 1;
             let num_str = format!("{line_num}");
@@ -1372,9 +1376,14 @@ fn setup_editor_key_handling(text_view: &gtk4::TextView) {
     let key_controller = gtk4::EventControllerKey::new();
     key_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
 
-    let text_view_clone = text_view.clone();
+    // WeakRef разрывает цикл TextView -> controller -> handler -> TextView.
+    let text_view_weak = text_view.downgrade();
 
     key_controller.connect_key_pressed(move |_, keyval, _keycode, state| {
+        let Some(text_view) = text_view_weak.upgrade() else {
+            return glib::Propagation::Proceed;
+        };
+
         // Комбинации с Ctrl/Alt (например, Ctrl+Tab) не перехватываем.
         if state.contains(gtk4::gdk::ModifierType::CONTROL_MASK)
             || state.contains(gtk4::gdk::ModifierType::ALT_MASK)
@@ -1396,7 +1405,7 @@ fn setup_editor_key_handling(text_view: &gtk4::TextView) {
             || keyval == gtk4::gdk::Key::KP_Left;
 
         if is_forward_boundary || is_backward_boundary {
-            let buffer = text_view_clone.buffer();
+            let buffer = text_view.buffer();
             let insert_mark = buffer.get_insert();
             let iter = buffer.iter_at_mark(&insert_mark);
 
@@ -1416,7 +1425,7 @@ fn setup_editor_key_handling(text_view: &gtk4::TextView) {
             return glib::Propagation::Proceed;
         }
 
-        let buffer = text_view_clone.buffer();
+        let buffer = text_view.buffer();
 
         if is_iso_left_tab || (is_tab && is_shift) {
             unindent_selection_or_cursor(&buffer);
@@ -1683,6 +1692,60 @@ mod tests {
         assert_eq!(
             classify_link_uri("https://example.com#target", Some(current)),
             LinkTarget::External("https://example.com#target".to_string())
+        );
+    }
+
+    #[gtk4::test]
+    fn test_gutter_does_not_keep_text_view_alive() {
+        let settings = Rc::new(RefCell::new(AppSettings::default()));
+        let text_view = gtk4::TextView::new();
+        let weak_text_view = text_view.downgrade();
+
+        // Держим gutter отдельно: если draw-функция захватит TextView
+        // сильной ссылкой, цикл не даст TextView освободиться.
+        let _gutter = setup_line_numbers_gutter(&text_view, &settings);
+
+        drop(text_view);
+        assert!(
+            weak_text_view.upgrade().is_none(),
+            "gutter draw func keeps TextView alive"
+        );
+    }
+
+    #[gtk4::test]
+    fn test_key_controller_does_not_keep_text_view_alive() {
+        let text_view = gtk4::TextView::new();
+        let weak_text_view = text_view.downgrade();
+
+        setup_editor_key_handling(&text_view);
+
+        drop(text_view);
+        assert!(
+            weak_text_view.upgrade().is_none(),
+            "key controller keeps TextView alive"
+        );
+    }
+
+    #[gtk4::test]
+    fn test_document_is_freed_after_drop() {
+        let settings = Rc::new(RefCell::new(AppSettings::default()));
+        let doc = Document::new(settings, None, false).expect("create document");
+        let weak_doc = Rc::downgrade(&doc);
+        let weak_web_view = doc.web_view.downgrade();
+        let weak_text_view = doc.text_view.downgrade();
+
+        drop(doc);
+        assert!(
+            weak_doc.upgrade().is_none(),
+            "Document is kept alive by internal signal handlers"
+        );
+        assert!(
+            weak_web_view.upgrade().is_none(),
+            "WebView is kept alive by its own load handler"
+        );
+        assert!(
+            weak_text_view.upgrade().is_none(),
+            "TextView is kept alive by editor signal handlers"
         );
     }
 
