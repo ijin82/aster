@@ -222,11 +222,14 @@ cargo run -- test.md
   - `preferences.rs` — `adw::PreferencesWindow`;
   - `session.rs` — сохранение сессии и геометрии окна;
   - `actions.rs` — регистрация действий `win.*` и связанных зависимостей.
-- [`src/document.rs`](src/document.rs) — одна вкладка документа:
+- [`src/document/mod.rs`](src/document/mod.rs) — модель и состояние одной вкладки:
   - Собственные `GtkTextBuffer`, `GtkTextView`, `WebKitWebView` и `adw::ViewStack` для каждого открытого файла.
-  - Раздельная память прокрутки редактора (`GtkAdjustment`) и предпросмотра (`window.scrollY` через WebKit message handler).
-  - Поиск `GtkTextIter::forward_search`, подсветка Markdown, отступы `Tab` / `Shift+Tab`.
-  - CSS-шрифт редактора: правило действует на весь виджет, поэтому новый текст сохраняет выбранный размер и гарнитуру.
+  - Загрузка/сохранение, режимы редактор/предпросмотр, заголовок вкладки, темы и сессионное состояние.
+- [`src/document/search.rs`](src/document/search.rs) — поиск, замена и поиск по видимому HTML.
+- [`src/document/editor.rs`](src/document/editor.rs) — `Tab`/`Shift+Tab`, дублирование строки, клавиатурные границы и восстановление курсора.
+- [`src/document/gutter.rs`](src/document/gutter.rs) — номера строк.
+- [`src/document/links.rs`](src/document/links.rs) — политика ссылок в предпросмотре.
+- [`src/document/tests.rs`](src/document/tests.rs) — тесты документа.
 - [`src/highlighter.rs`](src/highlighter.rs) — встроенная подсветка синтаксиса Markdown для `GtkTextView` через создание и применение `GtkTextTag` (заголовки, жирный/курсив, код, ссылки, цитаты, списки) с палитрами для каждой темы оформления.
 - [`src/i18n.rs`](src/i18n.rs) — типизированная интернационализация и переводы элементов интерфейса (русский и английский языки).
 - [`src/renderer.rs`](src/renderer.rs) — парсинг Markdown с флагами GFM через `pulldown-cmark` и внедрение `github-markdown-css` во встроенный HTML-шаблон.

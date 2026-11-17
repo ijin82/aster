@@ -23,7 +23,8 @@
      - `main.rs` — точка входа, CLI (`--version`, `--help`), обработка `activate`/`open`.
      - `window.rs` — композиция окна, действия и связывание подсистем.
      - `window/style.rs`, `menus.rs`, `tabs.rs`, `dialogs.rs`, `preferences.rs`, `session.rs`, `actions.rs` — вынесенные части окна.
-     - `document.rs` — одна вкладка: редактор, предпросмотр, поиск, прокрутка.
+     - `document/mod.rs` — модель и состояние одной вкладки.
+     - `document/search.rs`, `editor.rs`, `gutter.rs`, `links.rs`, `tests.rs` — поиск/замена, клавиатура, номера строк, ссылки и тесты.
      - `renderer.rs` — генерация HTML/CSS для GitHub Markdown.
      - `settings.rs` — модель конфигурации и персистентность (XDG).
      - `highlighter.rs`, `i18n.rs` — подсветка Markdown и переводы.
