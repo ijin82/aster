@@ -107,6 +107,20 @@ impl Language {
         }
     }
 
+    pub fn tooltip_replace(&self) -> &'static str {
+        match self {
+            Language::Russian => "Замена (Ctrl+H)",
+            Language::English => "Replace (Ctrl+H)",
+        }
+    }
+
+    pub fn replace_placeholder(&self) -> &'static str {
+        match self {
+            Language::Russian => "Заменить на…",
+            Language::English => "Replace with…",
+        }
+    }
+
     pub fn tooltip_menu(&self) -> &'static str {
         match self {
             Language::Russian => "Главное меню",
@@ -229,6 +243,27 @@ impl Language {
         match self {
             Language::Russian => "Сохранить все",
             Language::English => "Save All",
+        }
+    }
+
+    pub fn btn_replace(&self) -> &'static str {
+        match self {
+            Language::Russian => "Заменить",
+            Language::English => "Replace",
+        }
+    }
+
+    pub fn btn_replace_all(&self) -> &'static str {
+        match self {
+            Language::Russian => "Заменить всё",
+            Language::English => "Replace All",
+        }
+    }
+
+    pub fn menu_find_replace(&self) -> &'static str {
+        match self {
+            Language::Russian => "Найти и заменить",
+            Language::English => "Find and Replace",
         }
     }
 

@@ -154,6 +154,19 @@ pub struct Document {
     pub search_next_btn: gtk4::Button,
     /// Счетчик вида «3 из 17» или «Нет совпадений».
     pub search_status: gtk4::Label,
+    /// Поле «Заменить на…».
+    pub replace_entry: gtk4::Entry,
+    /// Переключатель показа строки замены.
+    pub replace_toggle: gtk4::ToggleButton,
+    /// Кнопка замены текущего совпадения.
+    pub replace_btn: gtk4::Button,
+    /// Кнопка замены всех совпадений.
+    pub replace_all_btn: gtk4::Button,
+    /// Строка замены, скрываемая, пока замена не включена.
+    replace_row: gtk4::Box,
+    /// Пока true, изменение буфера не должно само пересчитывать поиск:
+    /// это делает replace_current/replace_all после завершения правки.
+    suppress_search_refresh: Cell<bool>,
     /// Позиции найденных совпадений в виде (начало, конец) по offset буфера.
     search_matches: RefCell<Vec<(i32, i32)>>,
     /// Индекс текущего совпадения в `search_matches`.
@@ -253,12 +266,45 @@ impl Document {
         search_status.set_width_chars(9);
         search_status.set_xalign(0.5);
 
-        let search_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
-        search_box.append(&search_entry);
-        search_box.append(&search_status);
-        search_box.append(&search_prev_btn);
-        search_box.append(&search_next_btn);
-        search_bar.set_child(Some(&search_box));
+        let replace_toggle = gtk4::ToggleButton::builder()
+            .icon_name("edit-find-replace-symbolic")
+            .tooltip_text(lang.tooltip_replace())
+            .build();
+        replace_toggle.add_css_class("flat");
+        replace_toggle.set_active(false);
+
+        let replace_entry = gtk4::Entry::new();
+        replace_entry.set_hexpand(true);
+        replace_entry.set_placeholder_text(Some(lang.replace_placeholder()));
+        replace_entry.set_visible(false);
+
+        let replace_btn = gtk4::Button::with_label(lang.btn_replace());
+        replace_btn.add_css_class("flat");
+        replace_btn.set_visible(false);
+        replace_btn.set_sensitive(false);
+
+        let replace_all_btn = gtk4::Button::with_label(lang.btn_replace_all());
+        replace_all_btn.add_css_class("flat");
+        replace_all_btn.set_visible(false);
+        replace_all_btn.set_sensitive(false);
+
+        let search_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        search_row.append(&search_entry);
+        search_row.append(&search_status);
+        search_row.append(&search_prev_btn);
+        search_row.append(&search_next_btn);
+        search_row.append(&replace_toggle);
+
+        let replace_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        replace_row.append(&replace_entry);
+        replace_row.append(&replace_btn);
+        replace_row.append(&replace_all_btn);
+        replace_row.set_visible(false);
+
+        let search_rows = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+        search_rows.append(&search_row);
+        search_rows.append(&replace_row);
+        search_bar.set_child(Some(&search_rows));
         search_bar.connect_entry(&search_entry);
 
         // --- Стек режимов документа ---
@@ -357,6 +403,12 @@ impl Document {
             search_prev_btn,
             search_next_btn,
             search_status,
+            replace_entry,
+            replace_toggle,
+            replace_btn,
+            replace_all_btn,
+            replace_row,
+            suppress_search_refresh: Cell::new(false),
             search_matches: RefCell::new(Vec::new()),
             search_index: Cell::new(0),
             buffer,
@@ -407,7 +459,9 @@ impl Document {
                 doc.is_modified.set(true);
                 doc.gutter.queue_draw();
                 highlighter::highlight_markdown_buffer(buf);
-                doc.refresh_search_matches(false);
+                if !doc.suppress_search_refresh.get() {
+                    doc.refresh_search_matches(false);
+                }
                 doc.update_tab_title();
             }
         });
@@ -880,6 +934,11 @@ impl Document {
             .set_tooltip_text(Some(lang.tooltip_search_previous()));
         self.search_next_btn
             .set_tooltip_text(Some(lang.tooltip_search_next()));
+        self.replace_toggle.set_tooltip_text(Some(lang.tooltip_replace()));
+        self.replace_entry
+            .set_placeholder_text(Some(lang.replace_placeholder()));
+        self.replace_btn.set_label(lang.btn_replace());
+        self.replace_all_btn.set_label(lang.btn_replace_all());
         self.update_search_status();
         self.update_tab_title();
     }
@@ -969,8 +1028,63 @@ impl Document {
             }
         });
 
-        // Закрытие панели убирает подсветку; повторное открытие с тем же
-        // запросом восстанавливает ее.
+        // Показ/скрытие строки замены.
+        let replace_row = self.replace_row.clone();
+        let replace_entry = self.replace_entry.clone();
+        let search_entry = self.search_entry.clone();
+        let replace_btn = self.replace_btn.clone();
+        let replace_all_btn = self.replace_all_btn.clone();
+        self.replace_toggle.connect_toggled(move |button| {
+            let visible = button.is_active();
+            replace_row.set_visible(visible);
+            replace_entry.set_visible(visible);
+            replace_btn.set_visible(visible);
+            replace_all_btn.set_visible(visible);
+            if visible {
+                if search_entry.text().is_empty() {
+                    search_entry.grab_focus();
+                } else {
+                    replace_entry.grab_focus();
+                }
+            }
+        });
+
+        let weak_doc = Rc::downgrade(self);
+        self.replace_btn.connect_clicked(move |_| {
+            if let Some(doc) = weak_doc.upgrade() {
+                doc.replace_current();
+            }
+        });
+        let weak_doc = Rc::downgrade(self);
+        self.replace_all_btn.connect_clicked(move |_| {
+            if let Some(doc) = weak_doc.upgrade() {
+                doc.replace_all();
+            }
+        });
+        let weak_doc = Rc::downgrade(self);
+        self.replace_entry.connect_activate(move |_| {
+            if let Some(doc) = weak_doc.upgrade() {
+                doc.replace_current();
+            }
+        });
+
+        // Esc в поле замены должен закрывать всю панель, как и в поле поиска.
+        let weak_doc = Rc::downgrade(self);
+        let replace_key_controller = gtk4::EventControllerKey::new();
+        replace_key_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        replace_key_controller.connect_key_pressed(move |_, keyval, _, _| {
+            if keyval == gtk4::gdk::Key::Escape {
+                if let Some(doc) = weak_doc.upgrade() {
+                    doc.search_bar.set_search_mode(false);
+                }
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        self.replace_entry.add_controller(replace_key_controller);
+
+        // Закрытие панели убирает подсветку и прячет строку замены;
+        // повторное открытие с тем же запросом восстанавливает поиск.
         let weak_doc = Rc::downgrade(self);
         self.search_bar
             .connect_search_mode_enabled_notify(move |bar| {
@@ -979,9 +1093,84 @@ impl Document {
                         doc.refresh_search_matches(true);
                     } else {
                         doc.clear_search_highlights();
+                        doc.replace_toggle.set_active(false);
+                        doc.replace_row.set_visible(false);
                     }
                 }
             });
+    }
+
+    /// Открывает панель поиска сразу в режиме замены (Ctrl+H).
+    pub fn open_replace_mode(&self) {
+        self.search_bar.set_search_mode(true);
+        self.replace_toggle.set_active(true);
+        self.replace_row.set_visible(true);
+
+        // Если запрос еще не введен, сначала нужен поиск, а не поле замены.
+        if self.search_entry.text().is_empty() {
+            self.search_entry.grab_focus();
+        } else {
+            self.replace_entry.grab_focus();
+        }
+    }
+
+    /// Заменяет текущее совпадение и переходит к следующему.
+    fn replace_current(&self) {
+        let Some((match_start, match_end)) = self
+            .search_matches
+            .borrow()
+            .get(self.search_index.get())
+            .copied()
+        else {
+            return;
+        };
+
+        let replacement = self.replace_entry.text().to_string();
+        let replacement_len = replacement.chars().count() as i32;
+
+        self.suppress_search_refresh.set(true);
+        self.buffer.begin_user_action();
+
+        let mut start_iter = self.buffer.iter_at_offset(match_start);
+        let mut end_iter = self.buffer.iter_at_offset(match_end);
+        self.buffer.delete(&mut start_iter, &mut end_iter);
+
+        if !replacement.is_empty() {
+            let mut insert_iter = self.buffer.iter_at_offset(match_start);
+            self.buffer.insert(&mut insert_iter, &replacement);
+        }
+
+        self.buffer.end_user_action();
+        self.suppress_search_refresh.set(false);
+
+        self.refresh_search_matches(false);
+
+        let after = match_start + replacement_len;
+        let matches = self.search_matches.borrow();
+        if !matches.is_empty() {
+            let next_index = next_match_index_after(&matches, after);
+            drop(matches);
+            self.search_index.set(next_index);
+            self.update_search_status();
+            self.apply_current_search_match();
+        }
+    }
+
+    /// Заменяет все совпадения одним действием Undo.
+    fn replace_all(&self) {
+        let query = self.search_entry.text().to_string();
+        if query.is_empty() {
+            return;
+        }
+        let replacement = self.replace_entry.text().to_string();
+
+        self.suppress_search_refresh.set(true);
+        let count = replace_all_matches(&self.buffer, &query, &replacement);
+        self.suppress_search_refresh.set(false);
+
+        if count > 0 {
+            self.refresh_search_matches(true);
+        }
     }
 
     /// Пересчитывает совпадения по текущему запросу.
@@ -1092,6 +1281,8 @@ impl Document {
 
         self.search_prev_btn.set_sensitive(total > 0);
         self.search_next_btn.set_sensitive(total > 0);
+        self.replace_btn.set_sensitive(total > 0);
+        self.replace_all_btn.set_sensitive(total > 0);
 
         if !self.search_bar.is_search_mode() || self.search_entry.text().is_empty() {
             self.search_status.set_text("");
@@ -1171,6 +1362,43 @@ fn is_current_document_base(base: &str, current_file: &Path) -> bool {
     }
 
     false
+}
+
+/// Индекс ближайшего совпадения, начинающегося не раньше `after`.
+///
+/// Если таких нет, возвращает 0: после замены поиск заворачивается на начало.
+fn next_match_index_after(matches: &[(i32, i32)], after: i32) -> usize {
+    matches
+        .iter()
+        .position(|(start, _)| *start >= after)
+        .unwrap_or(0)
+}
+
+/// Заменяет все вхождения `query` на `replacement` и возвращает их количество.
+///
+/// Правки идут с конца, чтобы offset'ы еще не обработанных совпадений
+/// оставались корректными. Все изменения оборачиваются в одно user action,
+/// поэтому `Ctrl+Z` отменяет замену целиком.
+fn replace_all_matches(buffer: &gtk4::TextBuffer, query: &str, replacement: &str) -> usize {
+    let matches = find_matches(buffer, query);
+    if matches.is_empty() {
+        return 0;
+    }
+
+    buffer.begin_user_action();
+    for &(start, end) in matches.iter().rev() {
+        let mut start_iter = buffer.iter_at_offset(start);
+        let mut end_iter = buffer.iter_at_offset(end);
+        buffer.delete(&mut start_iter, &mut end_iter);
+
+        if !replacement.is_empty() {
+            let mut insert_iter = buffer.iter_at_offset(start);
+            buffer.insert(&mut insert_iter, replacement);
+        }
+    }
+    buffer.end_user_action();
+
+    matches.len()
 }
 
 /// Находит все вхождения запроса и возвращает их диапазоны в offset'ах буфера.
@@ -1808,6 +2036,40 @@ mod tests {
             weak_text_view.upgrade().is_none(),
             "TextView is kept alive by editor signal handlers"
         );
+    }
+
+    #[test]
+    fn test_next_match_index_after_replacement() {
+        let matches = [(0, 3), (10, 13), (20, 23)];
+        assert_eq!(next_match_index_after(&matches, 0), 0);
+        assert_eq!(next_match_index_after(&matches, 4), 1);
+        assert_eq!(next_match_index_after(&matches, 11), 2);
+        assert_eq!(next_match_index_after(&matches, 21), 0);
+        assert_eq!(next_match_index_after(&[], 0), 0);
+    }
+
+    #[gtk4::test]
+    fn test_replace_all_matches() {
+        let buffer = gtk4::TextBuffer::new(None);
+        buffer.set_text("Foo foo food\nbar\n");
+
+        let count = replace_all_matches(&buffer, "foo", "baz");
+        assert_eq!(count, 3);
+        let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+        assert_eq!(text.as_str(), "baz baz bazd\nbar\n");
+
+        // Пустая строка замены удаляет совпадения, но не ломает текст.
+        let buffer = gtk4::TextBuffer::new(None);
+        buffer.set_text("a-a-a");
+        assert_eq!(replace_all_matches(&buffer, "a", ""), 3);
+        assert_eq!(
+            buffer
+                .text(&buffer.start_iter(), &buffer.end_iter(), false)
+                .as_str(),
+            "--"
+        );
+
+        assert_eq!(replace_all_matches(&buffer, "", "x"), 0);
     }
 
     #[gtk4::test]

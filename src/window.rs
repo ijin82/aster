@@ -631,6 +631,20 @@ pub fn build_window(
     }
     actions.add_action(&find_action);
 
+    let find_replace_action = gio::SimpleAction::new("find_replace", None);
+    {
+        let tab_view = tab_view.clone();
+        let docs = docs.clone();
+        let refresh_active_ui = refresh_active_ui.clone();
+        find_replace_action.connect_activate(move |_, _| {
+            if let Some(doc) = active_document(&tab_view, &docs) {
+                doc.open_replace_mode();
+                refresh_active_ui();
+            }
+        });
+    }
+    actions.add_action(&find_replace_action);
+
     let preferences_action = gio::SimpleAction::new("preferences", None);
     {
         let window = window.clone();
@@ -1071,6 +1085,7 @@ pub fn build_window(
     );
     app.set_accels_for_action("win.toggle_preview", &["<Control>e"]);
     app.set_accels_for_action("win.find", &["<Control>f"]);
+    app.set_accels_for_action("win.find_replace", &["<Control>h"]);
     app.set_accels_for_action("win.close", &["<Control>q", "<Control>F4"]);
 
     window
@@ -1154,6 +1169,7 @@ fn tab_page_at_position(tab_view: &adw::TabView, position: u32) -> Option<adw::T
 fn rebuild_main_menu(menu: &gio::Menu, lang: Language) {
     menu.remove_all();
     menu.append(Some(lang.menu_new_tab()), Some("win.new_tab"));
+    menu.append(Some(lang.menu_find_replace()), Some("win.find_replace"));
     menu.append(Some(lang.menu_save_as()), Some("win.save_as"));
     menu.append(Some(lang.menu_preferences()), Some("win.preferences"));
     menu.append(Some(lang.menu_about()), Some("win.about"));
