@@ -480,7 +480,7 @@ pub fn build_window(
     {
         let tab_view = tab_view.clone();
         next_tab_action.connect_activate(move |_, _| {
-            tab_view.select_next_page();
+            select_tab_wrapped(&tab_view, true);
         });
     }
     actions.add_action(&next_tab_action);
@@ -489,7 +489,7 @@ pub fn build_window(
     {
         let tab_view = tab_view.clone();
         previous_tab_action.connect_activate(move |_, _| {
-            tab_view.select_previous_page();
+            select_tab_wrapped(&tab_view, false);
         });
     }
     actions.add_action(&previous_tab_action);
@@ -959,6 +959,58 @@ fn active_document(
         .iter()
         .find(|doc| doc.matches_page(&page))
         .cloned()
+}
+
+/// Выбирает следующую/предыдущую вкладку, заворачивая список по кругу.
+///
+/// `adw::TabView::select_next_page()` и `select_previous_page()` не
+/// заворачиваются: на последней вкладке они просто возвращают `false`.
+/// Поэтому позиция вычисляется вручную, а затем выбирается нужная страница.
+fn select_tab_wrapped(tab_view: &adw::TabView, forward: bool) {
+    let n_pages = tab_view.n_pages();
+    if n_pages <= 0 {
+        return;
+    }
+
+    let current = tab_view
+        .selected_page()
+        .map(|page| tab_view.page_position(&page))
+        .unwrap_or(-1);
+
+    let Some(target) = wrapped_tab_position(current, n_pages, forward) else {
+        return;
+    };
+
+    if let Some(page) = tab_page_at_position(tab_view, target as u32) {
+        tab_view.set_selected_page(&page);
+    }
+}
+
+/// Вычисляет позицию следующей вкладки с заворотом.
+///
+/// Возвращает `None`, если вкладок нет. При некорректной текущей позиции
+/// выбирает первую вкладку для движения вперед и последнюю — для движения назад.
+fn wrapped_tab_position(current: i32, total: i32, forward: bool) -> Option<i32> {
+    if total <= 0 {
+        return None;
+    }
+    if current < 0 || current >= total {
+        return Some(if forward { 0 } else { total - 1 });
+    }
+
+    if forward {
+        Some((current + 1) % total)
+    } else {
+        Some((current - 1 + total) % total)
+    }
+}
+
+/// Возвращает страницу вкладки по ее позиции в `adw::TabView`.
+fn tab_page_at_position(tab_view: &adw::TabView, position: u32) -> Option<adw::TabPage> {
+    let pages = tab_view.pages();
+    pages
+        .item(position)
+        .and_then(|object| object.downcast::<adw::TabPage>().ok())
 }
 
 /// Перестраивает главное меню при смене языка интерфейса.
@@ -1549,6 +1601,50 @@ fn show_about_dialog(parent: &adw::ApplicationWindow, lang: Language) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_tab_position_wraps_forward_and_backward() {
+        // Вперед: 0 -> 1 -> 2 -> 0.
+        assert_eq!(wrapped_tab_position(0, 3, true), Some(1));
+        assert_eq!(wrapped_tab_position(1, 3, true), Some(2));
+        assert_eq!(wrapped_tab_position(2, 3, true), Some(0));
+
+        // Назад: 2 -> 1 -> 0 -> 2.
+        assert_eq!(wrapped_tab_position(2, 3, false), Some(1));
+        assert_eq!(wrapped_tab_position(1, 3, false), Some(0));
+        assert_eq!(wrapped_tab_position(0, 3, false), Some(2));
+
+        assert_eq!(wrapped_tab_position(-1, 3, true), Some(0));
+        assert_eq!(wrapped_tab_position(-1, 3, false), Some(2));
+        assert_eq!(wrapped_tab_position(0, 0, true), None);
+    }
+
+    #[gtk4::test]
+    fn test_tab_view_selection_wraps_at_boundaries() {
+        let tab_view = adw::TabView::new();
+        for index in 0..3 {
+            tab_view.append(&gtk4::Label::new(Some(&index.to_string())));
+        }
+
+        let first = tab_page_at_position(&tab_view, 0).expect("first tab");
+        let last = tab_page_at_position(&tab_view, 2).expect("last tab");
+
+        // С последней вкладки вперед переходим на первую.
+        tab_view.set_selected_page(&last);
+        select_tab_wrapped(&tab_view, true);
+        assert_eq!(
+            tab_view.page_position(&tab_view.selected_page().expect("selected tab")),
+            0
+        );
+
+        // С первой вкладки назад переходим на последнюю.
+        tab_view.set_selected_page(&first);
+        select_tab_wrapped(&tab_view, false);
+        assert_eq!(
+            tab_view.page_position(&tab_view.selected_page().expect("selected tab")),
+            2
+        );
+    }
 
     #[gtk4::test]
     fn test_all_gtk_sound_feedback_is_disabled() {
