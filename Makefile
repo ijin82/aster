@@ -38,7 +38,7 @@ uninstall:
 
 # Удобные алиасы для упаковки.
 package:
-	./package-release.sh
+	./package-release.sh $(VERSION)
 
 release: package
 

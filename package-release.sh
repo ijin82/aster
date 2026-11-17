@@ -2,8 +2,8 @@
 # Aster release packaging: fresh Cargo release build, strip, archive, checksum.
 #
 #   ./package-release.sh            — use the version from VERSION
-#   ./package-release.sh v0.2.0     — explicit version (must match VERSION)
-#   VERSION=v0.2.0 ./package-release.sh
+#   ./package-release.sh v0.3.0     — set this version in VERSION/Cargo.toml
+#   VERSION=v0.3.0 ./package-release.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,14 +14,27 @@ APP_TITLE="Aster"
 DIST_DIR="${SCRIPT_DIR}/dist"
 CARGO_BIN="${SCRIPT_DIR}/target/release/${APP_NAME}"
 
+[ -f "Cargo.toml" ] || {
+    echo "Error: Cargo.toml not found. Run this script from a source checkout." >&2
+    exit 1
+}
+
 # --- version ---------------------------------------------------------------
 
-VERSION="${1:-${VERSION:-}}"
-if [ -z "${VERSION}" ] && [ -f "VERSION" ]; then
+# Explicit version (argument or environment) is the source of truth:
+# the script itself updates VERSION and Cargo.toml, so a release can be
+# prepared with a single command and no manual edits.
+VERSION_SPECIFIED=false
+if [ -n "${1:-}" ]; then
+    VERSION="$1"
+    VERSION_SPECIFIED=true
+elif [ -n "${VERSION:-}" ]; then
+    VERSION_SPECIFIED=true
+elif [ -f "VERSION" ]; then
     VERSION="$(xargs < VERSION)"
-fi
-if [ -z "${VERSION}" ]; then
-    read -r -p "Enter release version (e.g. v0.2.0): " VERSION
+else
+    read -r -p "Enter release version (e.g. v0.3.0): " VERSION
+    VERSION_SPECIFIED=true
 fi
 
 VERSION="$(echo "${VERSION}" | xargs)"
@@ -32,22 +45,41 @@ case "${VERSION}" in
     *) VERSION="v${VERSION}" ;;
 esac
 
-[ -f "VERSION" ] || { echo "Error: VERSION file is missing." >&2; exit 1; }
-
-FILE_VERSION="$(xargs < VERSION)"
-if [ "${FILE_VERSION}" != "${VERSION}" ]; then
-    echo "Error: VERSION contains '${FILE_VERSION}', but '${VERSION}' was requested." >&2
-    echo "       Update the VERSION file first — it is the single source of truth." >&2
+if [[ ! "${VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+    echo "Error: '${VERSION}' is not a valid release version." >&2
+    echo "       Expected a semantic version such as v0.3.0 or v1.0.0-rc1." >&2
     exit 1
 fi
 
-# Cargo.toml must agree with VERSION, otherwise the binary reports a different
-# version and the release would be misleading.
-CARGO_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
-if [ "v${CARGO_VERSION}" != "${VERSION}" ]; then
-    echo "Error: Cargo.toml version is '${CARGO_VERSION}', but VERSION is '${VERSION}'." >&2
-    echo "       Update Cargo.toml so both files match." >&2
-    exit 1
+BARE_VERSION="${VERSION#v}"
+
+# Update the two version sources automatically when a version was passed.
+if [ "${VERSION_SPECIFIED}" = true ]; then
+    echo "==> Setting project version to ${VERSION}..."
+
+    printf '%s\n' "${VERSION}" > VERSION
+    sed -i "0,/^version = \"[^\"]*\"/s//version = \"${BARE_VERSION}\"/" Cargo.toml
+
+    FILE_VERSION="$(xargs < VERSION)"
+    CARGO_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+    if [ "${FILE_VERSION}" != "${VERSION}" ] || [ "${CARGO_VERSION}" != "${BARE_VERSION}" ]; then
+        echo "Error: failed to synchronize VERSION and Cargo.toml." >&2
+        echo "       VERSION=${FILE_VERSION}, Cargo.toml=${CARGO_VERSION}" >&2
+        exit 1
+    fi
+else
+    # No explicit version: only verify that the existing files agree.
+    [ -f "VERSION" ] || { echo "Error: VERSION file is missing." >&2; exit 1; }
+
+    FILE_VERSION="$(xargs < VERSION)"
+    CARGO_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+    if [ "${FILE_VERSION}" != "${VERSION}" ] || [ "v${CARGO_VERSION}" != "${VERSION}" ]; then
+        echo "Error: VERSION and Cargo.toml do not match." >&2
+        echo "       VERSION=${FILE_VERSION}, Cargo.toml=v${CARGO_VERSION}" >&2
+        echo "       Pass the release version explicitly, e.g. ./package-release.sh v0.3.0," >&2
+        echo "       and the script will update both files automatically." >&2
+        exit 1
+    fi
 fi
 
 ARCH="$(uname -m)"
@@ -63,7 +95,14 @@ echo "=================================================="
 # --- 1. build --------------------------------------------------------------
 
 echo "==> Building a fresh release binary..."
-cargo build --release --locked
+if [ "${VERSION_SPECIFIED}" = true ]; then
+    # Cargo.lock stores the version of the root package, so it must be
+    # refreshed after changing Cargo.toml. A plain build updates only that
+    # entry and keeps all dependency versions pinned by the existing lock.
+    cargo build --release
+else
+    cargo build --release --locked
+fi
 
 [ -f "${CARGO_BIN}" ] || { echo "Error: build failed, '${CARGO_BIN}' not found." >&2; exit 1; }
 

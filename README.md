@@ -163,17 +163,21 @@ Python-привязки PyGObject/Rsvg. Если их нет, устанавли
 ### 4. Сборка релизного архива
 
 ```bash
-# Версия берется из файла VERSION (например, v0.1.0)
-./package-release.sh
+# Подготовить релиз версии v0.3.0 одной командой
+./package-release.sh v0.3.0
 
-# Либо явно, но версия должна совпадать с VERSION и Cargo.toml
-./package-release.sh v0.1.0
+# Без аргумента используется текущая версия из VERSION
+./package-release.sh
 ```
 
-Скрипт проверяет версию в `Cargo.toml` и в выводе `aster --version`, собирает
-`cargo build --release --locked`, удаляет отладочные символы, складывает
-бинарник, `install.sh`, иконку, README и лицензию в
-`dist/aster-vX.Y.Z-linux-<arch>.tar.gz` и создает `.sha256`.
+Если версия передана аргументом (или через переменную `VERSION`), скрипт сам
+обновляет `VERSION`, `Cargo.toml` и `Cargo.lock` — вручную править файлы не
+нужно. Затем он проверяет вывод `aster --version`, собирает релиз, удаляет
+отладочные символы, складывает бинарник, `install.sh`, иконку, README и
+лицензию в `dist/aster-vX.Y.Z-linux-<arch>.tar.gz` и создает `.sha256`.
+
+После подготовки релиза не забудьте закоммитить обновленные `VERSION`,
+`Cargo.toml` и `Cargo.lock`.
 
 ### 5. Запуск приложения
 
