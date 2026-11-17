@@ -240,7 +240,10 @@ impl Document {
 
         if let Some(web_settings) = WebViewExt::settings(&web_view) {
             web_settings.set_allow_file_access_from_file_urls(true);
-            web_settings.set_allow_universal_access_from_file_urls(true);
+            // Файловому документу не нужен универсальный доступ: он должен
+            // читать только собственные относительные ресурсы (картинки),
+            // а не произвольные file:// URL.
+            web_settings.set_allow_universal_access_from_file_urls(false);
 
             // Markdown-предпросмотр не должен издавать звуки. Отключаем
             // воспроизведение медиа, Web Audio, захват медиапотоков и EME:
@@ -251,6 +254,16 @@ impl Document {
             web_settings.set_enable_media_stream(false);
             web_settings.set_enable_mediasource(false);
             web_settings.set_enable_encrypted_media(false);
+
+            // Предпросмотр — не браузер: страница не должна открывать окна,
+            // читать буфер обмена, показывать модальные диалоги и сохранять
+            // данные в локальное хранилище.
+            web_settings.set_javascript_can_open_windows_automatically(false);
+            web_settings.set_javascript_can_access_clipboard(false);
+            web_settings.set_allow_modal_dialogs(false);
+            web_settings.set_enable_html5_local_storage(false);
+            web_settings.set_enable_html5_database(false);
+            web_settings.set_enable_javascript_markup(false);
         }
 
         let preview_scroll = gtk4::ScrolledWindow::builder()
@@ -427,6 +440,92 @@ impl Document {
 
         // 6. Поиск по буферу текущего документа.
         self.setup_search();
+
+        // 7. Политика ссылок и запрет навигации самого WebView.
+        self.setup_link_policy();
+    }
+
+    /// Настраивает безопасное поведение ссылок в предпросмотре.
+    ///
+    /// Внутренние якоря прокручиваются внутри страницы, внешние URI
+    /// открываются системным обработчиком, а сам WebView не уходит
+    /// с текущего HTML-документа.
+    fn setup_link_policy(&self) {
+        let web_view = self.web_view.clone();
+
+        self.web_view.connect_decide_policy(
+            move |_web_view, decision, decision_type| {
+                let is_navigation = decision_type
+                    == webkit6::PolicyDecisionType::NavigationAction
+                    || decision_type == webkit6::PolicyDecisionType::NewWindowAction;
+
+                if !is_navigation {
+                    return false;
+                }
+
+                let Some(nav_decision) =
+                    decision.downcast_ref::<webkit6::NavigationPolicyDecision>()
+                else {
+                    return false;
+                };
+                let Some(mut action) = nav_decision.navigation_action() else {
+                    return false;
+                };
+
+                // Начальная загрузка нашего HTML и перезагрузка страницы
+                // должны идти стандартным путем.
+                let navigation_type = action.navigation_type();
+                if navigation_type == webkit6::NavigationType::Other
+                    || navigation_type == webkit6::NavigationType::Reload
+                {
+                    return false;
+                }
+
+                let uri = action
+                    .request()
+                    .and_then(|request| request.uri())
+                    .unwrap_or_default()
+                    .to_string();
+
+                match classify_link_uri(&uri) {
+                    LinkTarget::Anchor(id) => {
+                        let id_json = serde_json::to_string(&id)
+                            .unwrap_or_else(|_| "\"\"".to_string());
+                        let script = format!(
+                            "(function() {{ \
+                                if (!{id_json}) {{ window.scrollTo(0, 0); return; }} \
+                                var el = document.getElementById({id_json}) \
+                                    || document.getElementsByName({id_json})[0]; \
+                                if (el) {{ el.scrollIntoView(true); }} \
+                            }})();"
+                        );
+                        web_view.evaluate_javascript(
+                            &script,
+                            None,
+                            None,
+                            Option::<&gio::Cancellable>::None,
+                            |_| {},
+                        );
+                        decision.ignore();
+                        true
+                    }
+                    LinkTarget::External(uri) => {
+                        if let Err(error) = gio::AppInfo::launch_default_for_uri(
+                            &uri,
+                            Option::<&gio::AppLaunchContext>::None,
+                        ) {
+                            glib::g_warning!("Aster", "Failed to open external link {}: {}", uri, error);
+                        }
+                        decision.ignore();
+                        true
+                    }
+                    LinkTarget::Blocked => {
+                        decision.ignore();
+                        true
+                    }
+                }
+            },
+        );
     }
 
     /// Загружает файл в вкладку, восстанавливая курсор и прокрутку.
@@ -943,6 +1042,40 @@ impl Document {
     }
 }
 
+/// Куда направить клик по ссылке в предпросмотре.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LinkTarget {
+    /// Внутренний якорь вида `#section`.
+    Anchor(String),
+    /// Внешний URI, который откроет системный обработчик.
+    External(String),
+    /// Небезопасная или неподдерживаемая ссылка.
+    Blocked,
+}
+
+/// Классифицирует URI из HTML-предпросмотра.
+///
+/// Навигация по самому WebView запрещена: разрешены только внутренние
+/// якоря и передача внешнего URI системному приложению.
+fn classify_link_uri(uri: &str) -> LinkTarget {
+    let uri = uri.trim();
+
+    if uri.starts_with('#') {
+        return LinkTarget::Anchor(uri.trim_start_matches('#').to_string());
+    }
+
+    let lower = uri.to_ascii_lowercase();
+    let external = ["http://", "https://", "mailto:", "tel:", "file://", "ftp://"]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix));
+
+    if external {
+        LinkTarget::External(uri.to_string())
+    } else {
+        LinkTarget::Blocked
+    }
+}
+
 /// Находит все вхождения запроса и возвращает их диапазоны в offset'ах буфера.
 fn find_matches(buffer: &gtk4::TextBuffer, query: &str) -> Vec<(i32, i32)> {
     let mut matches = Vec::new();
@@ -1400,6 +1533,33 @@ mod tests {
         assert_eq!(wrapped_search_index(0, 3, false), Some(2));
         assert_eq!(wrapped_search_index(2, 3, false), Some(1));
         assert_eq!(wrapped_search_index(0, 0, true), None);
+    }
+
+    #[test]
+    fn test_classify_link_uri() {
+        assert_eq!(
+            classify_link_uri("#section-1"),
+            LinkTarget::Anchor("section-1".to_string())
+        );
+        assert_eq!(
+            classify_link_uri("#"),
+            LinkTarget::Anchor(String::new())
+        );
+        assert_eq!(
+            classify_link_uri("https://example.com"),
+            LinkTarget::External("https://example.com".to_string())
+        );
+        assert_eq!(
+            classify_link_uri("MAILTO:test@example.com"),
+            LinkTarget::External("MAILTO:test@example.com".to_string())
+        );
+        assert_eq!(
+            classify_link_uri("file:///tmp/other.md"),
+            LinkTarget::External("file:///tmp/other.md".to_string())
+        );
+        assert_eq!(classify_link_uri("javascript:alert(1)"), LinkTarget::Blocked);
+        assert_eq!(classify_link_uri("data:text/html,hi"), LinkTarget::Blocked);
+        assert_eq!(classify_link_uri("relative/file.md"), LinkTarget::Blocked);
     }
 
     #[gtk4::test]

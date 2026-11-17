@@ -373,30 +373,44 @@ mod tests {
 
     #[gtk4::test]
     fn test_real_readme_code_blocks_are_correct() {
-        // Регрессия из README: блок с комментариями install.sh и блок
-        // package-release.sh не должны «съедать» друг друга.
+        // Регрессия из README: блок с комментариями install.sh не должен
+        // «съедать» последующую разметку. Ищем строки по содержимому, чтобы
+        // тест не зависел от сдвига номеров строк в README.
         let buffer = highlighted_buffer(include_str!("../README.md"));
 
-        // Строки README 141-157 (0-based 140-156) — содержимое блока install.sh.
-        for line in 140..=156 {
+        let line_text = |line: i32| {
             let (start, end) = line_bounds(&buffer, line).expect("line bounds");
-            if buffer.text(&start, &end, false).trim().is_empty() {
+            buffer.text(&start, &end, false).to_string()
+        };
+        let find_line = |needle: &str| {
+            (0..buffer.line_count())
+                .find(|line| line_text(*line).contains(needle))
+                .unwrap_or_else(|| panic!("line containing {needle:?} not found"))
+        };
+
+        let install_line = find_line("./install.sh uninstall");
+        // Проверяем сам fence и предшествующие строки блока.
+        for line in (install_line - 18)..=install_line {
+            if line_text(line).trim().is_empty() {
                 continue;
             }
             assert!(
                 line_has_tag(&buffer, line, "md-code"),
-                "line {} must be code",
-                line + 1
+                "line {} must be code: {:?}",
+                line + 1,
+                line_text(line)
             );
             assert!(
                 !line_has_tag(&buffer, line, "md-header"),
-                "line {} must not be a heading",
-                line + 1
+                "line {} must not be a heading: {:?}",
+                line + 1,
+                line_text(line)
             );
         }
 
-        // README line 160 (0-based 159) — обычный текст после блока.
-        assert!(!line_has_tag(&buffer, 159, "md-code"));
-        assert!(!line_has_tag(&buffer, 159, "md-header"));
+        // Первый обычный абзац после закрывающего fence не должен быть кодом.
+        let prose_line = find_line("Для установки иконок в PNG-форматах");
+        assert!(!line_has_tag(&buffer, prose_line, "md-code"));
+        assert!(!line_has_tag(&buffer, prose_line, "md-header"));
     }
 }

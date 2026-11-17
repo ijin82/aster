@@ -139,6 +139,10 @@ pub fn render_markdown_to_html(
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- Предпросмотр не должен исполнять скрипты из Markdown и не должен
+         иметь доступ к сети. Собственный скрипт Aster внедряется как
+         WebKit user script и CSP не блокируется. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri file: http: https:; img-src file: data: https: http:; style-src 'unsafe-inline'; font-src data:; script-src 'none'; connect-src 'none'; object-src 'none'; frame-src 'none'; media-src 'none'; form-action 'none';">
     {base_tag}
     <style>
         {GITHUB_CSS}
@@ -283,6 +287,8 @@ mod tests {
         assert!(html.contains("class=\"markdown-body\""));
         assert!(!html.contains("source-line-anchor"));
         assert!(!html.contains("<script>"));
+        assert!(html.contains("Content-Security-Policy"));
+        assert!(html.contains("script-src 'none'"));
     }
 
     #[test]
