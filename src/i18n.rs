@@ -39,8 +39,8 @@ impl Language {
 
     pub fn tooltip_open(&self) -> &'static str {
         match self {
-            Language::Russian => "Открыть файл (Ctrl+O)",
-            Language::English => "Open file (Ctrl+O)",
+            Language::Russian => "Открыть файлы (Ctrl+O)",
+            Language::English => "Open files (Ctrl+O)",
         }
     }
 
@@ -257,8 +257,8 @@ impl Language {
 
     pub fn dialog_open_title(&self) -> &'static str {
         match self {
-            Language::Russian => "Открыть Markdown файл",
-            Language::English => "Open Markdown File",
+            Language::Russian => "Открыть Markdown файлы",
+            Language::English => "Open Markdown Files",
         }
     }
 

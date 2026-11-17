@@ -12,7 +12,7 @@ use adw::prelude::*;
 use gtk4::gio;
 use gtk4::glib;
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use crate::document::{self, Document};
@@ -160,6 +160,9 @@ pub fn build_window(
 
     // --- Разделяемое состояние окна ---
     let docs: Rc<RefCell<Vec<Rc<Document>>>> = Rc::new(RefCell::new(Vec::new()));
+    // Каталог последнего открытого/активного файла. Нужен, чтобы диалог
+    // открытия начинался в той же папке, даже если текущая вкладка безымянная.
+    let last_open_directory: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(None));
     let suppress_mode_sync = Rc::new(Cell::new(false));
     let suppress_search_sync = Rc::new(Cell::new(false));
     let is_force_closing = Rc::new(Cell::new(false));
@@ -264,6 +267,7 @@ pub fn build_window(
         let search_btn = search_btn.clone();
         let show_toast = show_toast.clone();
         let settings_for_error = settings.clone();
+        let last_open_directory = last_open_directory.clone();
 
         Rc::new(move |path: Option<PathBuf>, restore_mode: bool| {
             // Если файл уже открыт, не создаем дубликат, а переключаемся на него.
@@ -282,6 +286,7 @@ pub fn build_window(
                 }
             }
 
+            let path_for_directory = path.as_deref().and_then(parent_directory);
             let doc = match Document::new(settings.clone(), path, restore_mode) {
                 Ok(doc) => doc,
                 Err(error) => {
@@ -290,6 +295,9 @@ pub fn build_window(
                     return None;
                 }
             };
+            if let Some(directory) = path_for_directory {
+                *last_open_directory.borrow_mut() = Some(directory);
+            }
             let page = tab_view.append(&doc.root);
             *doc.tab_page.borrow_mut() = Some(page.clone());
             doc.update_tab_title();
@@ -386,12 +394,29 @@ pub fn build_window(
         let add_document = add_document.clone();
         let persist_session = persist_session.clone();
         let refresh_active_ui = refresh_active_ui.clone();
+        let tab_view = tab_view.clone();
+        let docs = docs.clone();
+        let last_open_directory = last_open_directory.clone();
 
         Rc::new(move || {
             let lang = Language::from_code(&settings.borrow().language);
             let dialog = gtk4::FileDialog::builder()
                 .title(lang.dialog_open_title())
                 .build();
+
+            // Начинаем с папки активного документа. Если активная вкладка
+            // безымянная — с папки последнего открытого файла.
+            let initial_directory = active_document(&tab_view, &docs)
+                .and_then(|doc| {
+                    doc.current_file
+                        .borrow()
+                        .as_ref()
+                        .and_then(|path| parent_directory(path))
+                })
+                .or_else(|| last_open_directory.borrow().clone());
+            if let Some(directory) = initial_directory {
+                dialog.set_initial_folder(Some(&gio::File::for_path(directory)));
+            }
 
             let filter = gtk4::FileFilter::new();
             filter.set_name(Some(lang.filter_markdown()));
@@ -405,17 +430,28 @@ pub fn build_window(
             let add_document = add_document.clone();
             let persist_session = persist_session.clone();
             let refresh_active_ui = refresh_active_ui.clone();
-            dialog.open(
+            dialog.open_multiple(
                 Some(&window),
                 gio::Cancellable::NONE,
                 move |res| {
-                    if let Ok(file) = res {
+                    let Ok(files) = res else {
+                        return;
+                    };
+
+                    for index in 0..files.n_items() {
+                        let Some(object) = files.item(index) else {
+                            continue;
+                        };
+                        let Ok(file) = object.downcast::<gio::File>() else {
+                            continue;
+                        };
                         if let Some(path) = file.path() {
                             add_document(Some(path), false);
-                            persist_session();
-                            refresh_active_ui();
                         }
                     }
+
+                    persist_session();
+                    refresh_active_ui();
                 },
             );
         })
@@ -430,6 +466,7 @@ pub fn build_window(
         let refresh_active_ui = refresh_active_ui.clone();
         let settings = settings.clone();
         let show_toast = show_toast.clone();
+        let last_open_directory = last_open_directory.clone();
 
         Rc::new(move |save_as: bool| {
             let Some(doc) = active_document(&tab_view, &docs) else {
@@ -439,12 +476,22 @@ pub fn build_window(
             let refresh_active_ui = refresh_active_ui.clone();
             let settings = settings.clone();
             let show_toast = show_toast.clone();
+            let last_open_directory = last_open_directory.clone();
+            let doc_for_directory = doc.clone();
             save_document(
                 &window,
                 &doc,
                 save_as,
                 Rc::new(move |result| match result {
                     Ok(true) => {
+                        if let Some(directory) = doc_for_directory
+                            .current_file
+                            .borrow()
+                            .as_ref()
+                            .and_then(|path| parent_directory(path))
+                        {
+                            *last_open_directory.borrow_mut() = Some(directory);
+                        }
                         persist_session();
                         refresh_active_ui();
                     }
@@ -734,12 +781,35 @@ pub fn build_window(
     if let Some(page) = active_page {
         tab_view.set_selected_page(&page);
     }
+    if let Some(doc) = active_document(&tab_view, &docs) {
+        if let Some(directory) = doc
+            .current_file
+            .borrow()
+            .as_ref()
+            .and_then(|path| parent_directory(path))
+        {
+            *last_open_directory.borrow_mut() = Some(directory);
+        }
+    }
 
     // --- Сигналы вкладок (подключаем после восстановления стартовых вкладок) ---
     {
         let persist_session = persist_session.clone();
         let refresh_active_ui = refresh_active_ui.clone();
+        let tab_view_for_directory = tab_view.clone();
+        let docs_for_directory = docs.clone();
+        let last_open_directory = last_open_directory.clone();
         tab_view.connect_selected_page_notify(move |_| {
+            if let Some(doc) = active_document(&tab_view_for_directory, &docs_for_directory) {
+                if let Some(directory) = doc
+                    .current_file
+                    .borrow()
+                    .as_ref()
+                    .and_then(|path| parent_directory(path))
+                {
+                    *last_open_directory.borrow_mut() = Some(directory);
+                }
+            }
             persist_session();
             refresh_active_ui();
         });
@@ -1004,6 +1074,16 @@ pub fn build_window(
     app.set_accels_for_action("win.close", &["<Control>q", "<Control>F4"]);
 
     window
+}
+
+/// Возвращает каталог файла для начальной папки диалога открытия.
+///
+/// Для относительного имени без каталога возвращает `None`: иначе GTK
+/// попытался бы открыть пустой путь.
+fn parent_directory(path: &Path) -> Option<PathBuf> {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(Path::to_path_buf)
 }
 
 /// Находит документ, соответствующий выбранной вкладке.
@@ -1657,6 +1737,19 @@ fn show_about_dialog(parent: &adw::ApplicationWindow, lang: Language) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parent_directory_for_open_dialog() {
+        assert_eq!(
+            parent_directory(Path::new("/tmp/a-tests/01-prose-ru.md")),
+            Some(PathBuf::from("/tmp/a-tests"))
+        );
+        assert_eq!(
+            parent_directory(Path::new("/tmp/a.md")),
+            Some(PathBuf::from("/tmp"))
+        );
+        assert_eq!(parent_directory(Path::new("a.md")), None);
+    }
 
     #[test]
     fn test_tab_position_wraps_forward_and_backward() {
