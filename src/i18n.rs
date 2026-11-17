@@ -213,6 +213,20 @@ impl Language {
         }
     }
 
+    pub fn error_open_file(&self) -> &'static str {
+        match self {
+            Language::Russian => "Не удалось открыть файл",
+            Language::English => "Could not open file",
+        }
+    }
+
+    pub fn error_save_file(&self) -> &'static str {
+        match self {
+            Language::Russian => "Не удалось сохранить файл",
+            Language::English => "Could not save file",
+        }
+    }
+
     pub fn dialog_open_title(&self) -> &'static str {
         match self {
             Language::Russian => "Открыть Markdown файл",

@@ -175,17 +175,37 @@ impl AppSettings {
     }
 
     /// Сохраняет текущие настройки на диск в формате JSON с отступами.
-    /// Создает директорию `~/.config/aster`, если она еще не существует.
+    ///
+    /// Запись выполняется атомарно: сначала во временный файл рядом с
+    /// `settings.json`, затем `rename`. Если приложение упадет во время
+    /// записи, старый файл настроек останется целым.
     pub fn save(&self) {
         if let Some(path) = Self::config_path() {
             if let Some(parent) = path.parent() {
                 let _ = fs::create_dir_all(parent);
             }
             if let Ok(json) = serde_json::to_string_pretty(self) {
-                let _ = fs::write(path, json);
+                let _ = write_atomic(&path, &json);
             }
         }
     }
+}
+
+/// Атомарно записывает текст в файл через временный файл и `rename`.
+fn write_atomic(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+    let temp_path = path.with_extension("json.tmp");
+
+    if let Err(error) = fs::write(&temp_path, content) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
+
+    if let Err(error) = fs::rename(&temp_path, path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -237,5 +257,34 @@ mod tests {
         assert_eq!(restored.session_active_document, 0);
         assert!(restored.file_view_states.is_empty());
         assert_eq!(restored.language, "ru");
+    }
+}
+
+
+#[cfg(test)]
+mod atomic_write_tests {
+    use super::*;
+
+    #[test]
+    fn test_write_atomic_replaces_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "aster-atomic-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        fs::create_dir_all(&dir).expect("create test dir");
+        let path = dir.join("settings.json");
+
+        write_atomic(&path, "first").expect("first write");
+        assert_eq!(fs::read_to_string(&path).expect("read first"), "first");
+
+        write_atomic(&path, "second").expect("second write");
+        assert_eq!(fs::read_to_string(&path).expect("read second"), "second");
+        assert!(!path.with_extension("json.tmp").exists());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

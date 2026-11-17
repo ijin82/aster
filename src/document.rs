@@ -138,7 +138,7 @@ impl Document {
         settings: Rc<RefCell<AppSettings>>,
         initial_path: Option<PathBuf>,
         restore_session_mode: bool,
-    ) -> Rc<Self> {
+    ) -> Result<Rc<Self>, String> {
         let lang = Language::from_code(&settings.borrow().language);
 
         // --- Общие CSS-классы и тема редактора ---
@@ -288,7 +288,7 @@ impl Document {
         // Загружаем начальный файл, если он передан. Позиции курсора и
         // прокрутки берутся из настроек по каноническому пути.
         if let Some(path) = initial_path {
-            doc.load_file(&path);
+            doc.load_file(&path)?;
         } else {
             doc.buffer.place_cursor(&doc.buffer.start_iter());
         }
@@ -299,7 +299,7 @@ impl Document {
             doc.refresh_preview();
         }
 
-        doc
+        Ok(doc)
     }
 
     /// Подключает все внутренние обработчики документа.
@@ -394,10 +394,12 @@ impl Document {
     }
 
     /// Загружает файл в вкладку, восстанавливая курсор и прокрутку.
-    pub fn load_file(&self, path: &Path) {
-        let Ok(content) = std::fs::read_to_string(path) else {
-            return;
-        };
+    ///
+    /// Возвращает текст ошибки с путем к файлу, чтобы окно могло показать
+    /// пользователю внятное уведомление вместо пустой вкладки.
+    pub fn load_file(&self, path: &Path) -> Result<(), String> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
 
         let key = get_file_canonical_key(path);
         let view_state = self
@@ -435,6 +437,8 @@ impl Document {
         } else {
             schedule_cursor_scroll(&self.text_view);
         }
+
+        Ok(())
     }
 
     /// Устанавливает режим документа. Используется окном при переключении
@@ -591,27 +595,28 @@ impl Document {
     }
 
     /// Сохраняет документ по уже известному пути.
-    pub fn save_existing(&self) -> bool {
-        let Some(path) = self.current_file.borrow().clone() else {
-            return false;
-        };
+    pub fn save_existing(&self) -> Result<(), String> {
+        let path = self
+            .current_file
+            .borrow()
+            .clone()
+            .ok_or_else(|| "document has no file path".to_string())?;
         self.save_to(&path)
     }
 
     /// Сохраняет документ по указанному пути и делает его текущим файлом.
-    pub fn save_to(&self, path: &Path) -> bool {
+    pub fn save_to(&self, path: &Path) -> Result<(), String> {
         let start = self.buffer.start_iter();
         let end = self.buffer.end_iter();
         let text = self.buffer.text(&start, &end, false);
 
-        if std::fs::write(path, text.as_bytes()).is_err() {
-            return false;
-        }
+        std::fs::write(path, text.as_bytes())
+            .map_err(|error| format!("{}: {error}", path.display()))?;
 
         *self.current_file.borrow_mut() = Some(path.to_path_buf());
         self.is_modified.set(false);
         self.update_tab_title();
-        true
+        Ok(())
     }
 
     /// Экспортирует позицию курсора и прокрутки в общие настройки.

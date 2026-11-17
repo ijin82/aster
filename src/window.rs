@@ -142,7 +142,21 @@ pub fn build_window(
     root_box.append(&header_bar);
     root_box.append(&tab_bar);
     root_box.append(&tab_view);
-    window.set_content(Some(&root_box));
+
+    // Неблокирующие уведомления (например, ошибки чтения/записи файла)
+    // показываются поверх всего содержимого окна.
+    let toast_overlay = adw::ToastOverlay::new();
+    toast_overlay.set_child(Some(&root_box));
+    window.set_content(Some(&toast_overlay));
+
+    let show_toast: Rc<dyn Fn(&str)> = {
+        let toast_overlay = toast_overlay.clone();
+        Rc::new(move |message: &str| {
+            let toast = adw::Toast::new(message);
+            toast.set_timeout(6);
+            toast_overlay.add_toast(toast);
+        })
+    };
 
     // --- Разделяемое состояние окна ---
     let docs: Rc<RefCell<Vec<Rc<Document>>>> = Rc::new(RefCell::new(Vec::new()));
@@ -248,6 +262,8 @@ pub fn build_window(
         let refresh_active_ui = refresh_active_ui.clone();
         let suppress_search_sync = suppress_search_sync.clone();
         let search_btn = search_btn.clone();
+        let show_toast = show_toast.clone();
+        let settings_for_error = settings.clone();
 
         Rc::new(move |path: Option<PathBuf>, restore_mode: bool| {
             // Если файл уже открыт, не создаем дубликат, а переключаемся на него.
@@ -266,7 +282,14 @@ pub fn build_window(
                 }
             }
 
-            let doc = Document::new(settings.clone(), path, restore_mode);
+            let doc = match Document::new(settings.clone(), path, restore_mode) {
+                Ok(doc) => doc,
+                Err(error) => {
+                    let lang = Language::from_code(&settings_for_error.borrow().language);
+                    show_toast(&format!("{}: {error}", lang.error_open_file()));
+                    return None;
+                }
+            };
             let page = tab_view.append(&doc.root);
             *doc.tab_page.borrow_mut() = Some(page.clone());
             doc.update_tab_title();
@@ -405,6 +428,8 @@ pub fn build_window(
         let docs = docs.clone();
         let persist_session = persist_session.clone();
         let refresh_active_ui = refresh_active_ui.clone();
+        let settings = settings.clone();
+        let show_toast = show_toast.clone();
 
         Rc::new(move |save_as: bool| {
             let Some(doc) = active_document(&tab_view, &docs) else {
@@ -412,14 +437,21 @@ pub fn build_window(
             };
             let persist_session = persist_session.clone();
             let refresh_active_ui = refresh_active_ui.clone();
+            let settings = settings.clone();
+            let show_toast = show_toast.clone();
             save_document(
                 &window,
                 &doc,
                 save_as,
-                Rc::new(move |ok| {
-                    if ok {
+                Rc::new(move |result| match result {
+                    Ok(true) => {
                         persist_session();
                         refresh_active_ui();
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        let lang = Language::from_code(&settings.borrow().language);
+                        show_toast(&format!("{}: {error}", lang.error_save_file()));
                     }
                 }),
             );
@@ -720,6 +752,7 @@ pub fn build_window(
         let tab_view = tab_view.clone();
         let persist_session = persist_session.clone();
         let refresh_active_ui = refresh_active_ui.clone();
+        let show_toast_for_close_page = show_toast.clone();
 
         tab_view.connect_close_page(move |view, page| {
             let doc = docs
@@ -752,6 +785,8 @@ pub fn build_window(
             let refresh_for_discard = refresh_active_ui.clone();
             let persist_for_save = persist_session.clone();
             let refresh_for_save = refresh_active_ui.clone();
+            let show_toast_for_save = show_toast_for_close_page.clone();
+            let settings_for_save = settings.clone();
 
             show_unsaved_changes_dialog(
                 &window,
@@ -774,13 +809,22 @@ pub fn build_window(
                         &window_for_save,
                         &doc_for_save,
                         false,
-                        Rc::new(move |ok| {
-                            if ok {
+                        Rc::new(move |result| match result {
+                            Ok(true) => {
                                 view_for_save.close_page_finish(&page_for_save, true);
                                 persist_for_save();
                                 refresh_for_save();
-                            } else {
+                            }
+                            Ok(false) => {
                                 view_for_save.close_page_finish(&page_for_save, false);
+                            }
+                            Err(error) => {
+                                view_for_save.close_page_finish(&page_for_save, false);
+                                let lang = Language::from_code(&settings_for_save.borrow().language);
+                                show_toast_for_save(&format!(
+                                    "{}: {error}",
+                                    lang.error_save_file()
+                                ));
                             }
                         }),
                     );
@@ -854,6 +898,7 @@ pub fn build_window(
         let save_window_geometry = save_window_geometry.clone();
         let is_force_closing = is_force_closing.clone();
         let is_closing = is_closing.clone();
+        let show_toast = show_toast.clone();
 
         move |win| {
             if is_force_closing.get() {
@@ -887,6 +932,8 @@ pub fn build_window(
             let closing_discard = is_closing.clone();
             let closing_save = is_closing.clone();
             let docs_for_save = modified.clone();
+            let settings_for_save = settings.clone();
+            let show_toast_for_save = show_toast.clone();
 
             show_unsaved_changes_dialog(
                 win,
@@ -906,17 +953,27 @@ pub fn build_window(
                 },
                 move || {
                     let win = win_for_save.clone();
+                    let settings_for_save = settings_for_save.clone();
+                    let show_toast_for_save = show_toast_for_save.clone();
                     save_documents_sequentially(
                         win_for_save.clone(),
                         docs_for_save.clone(),
                         0,
-                        Rc::new(move |ok| {
-                            if ok {
+                        Rc::new(move |result| match result {
+                            Ok(true) => {
                                 closing_save.set(true);
                                 persist_save();
                                 geom_save(&win);
                                 force_save.set(true);
                                 win.close();
+                            }
+                            Ok(false) => {}
+                            Err(error) => {
+                                let lang = Language::from_code(&settings_for_save.borrow().language);
+                                show_toast_for_save(&format!(
+                                    "{}: {error}",
+                                    lang.error_save_file()
+                                ));
                             }
                         }),
                     );
@@ -1138,12 +1195,12 @@ fn save_document(
     parent: &adw::ApplicationWindow,
     doc: &Rc<Document>,
     save_as: bool,
-    on_done: Rc<dyn Fn(bool)>,
+    on_done: Rc<dyn Fn(Result<bool, String>)>,
 ) {
     let has_path = doc.current_file.borrow().is_some();
 
     if !save_as && has_path {
-        on_done(doc.save_existing());
+        on_done(doc.save_existing().map(|()| true));
         return;
     }
 
@@ -1174,14 +1231,15 @@ fn save_document(
         Some(parent),
         gio::Cancellable::NONE,
         move |res| {
-            let saved = match res {
-                Ok(file) => file
-                    .path()
-                    .map(|path| doc.save_to(&path))
-                    .unwrap_or(false),
-                Err(_) => false,
+            let result = match res {
+                Ok(file) => match file.path() {
+                    Some(path) => doc.save_to(&path).map(|()| true),
+                    None => Ok(false),
+                },
+                // Закрытие диалога пользователем не является ошибкой.
+                Err(_) => Ok(false),
             };
-            on_done(saved);
+            on_done(result);
         },
     );
 }
@@ -1194,10 +1252,10 @@ fn save_documents_sequentially(
     parent: adw::ApplicationWindow,
     docs: Vec<Rc<Document>>,
     index: usize,
-    on_done: Rc<dyn Fn(bool)>,
+    on_done: Rc<dyn Fn(Result<bool, String>)>,
 ) {
     if index >= docs.len() {
-        on_done(true);
+        on_done(Ok(true));
         return;
     }
 
@@ -1211,17 +1269,15 @@ fn save_documents_sequentially(
         &parent_for_dialog,
         &doc,
         false,
-        Rc::new(move |ok| {
-            if ok {
-                save_documents_sequentially(
-                    parent_next.clone(),
-                    docs_next.clone(),
-                    index + 1,
-                    on_done_next.clone(),
-                );
-            } else {
-                on_done_next(false);
-            }
+        Rc::new(move |result| match result {
+            Ok(true) => save_documents_sequentially(
+                parent_next.clone(),
+                docs_next.clone(),
+                index + 1,
+                on_done_next.clone(),
+            ),
+            Ok(false) => on_done_next(Ok(false)),
+            Err(error) => on_done_next(Err(error)),
         }),
     );
 }
