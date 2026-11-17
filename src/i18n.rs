@@ -109,8 +109,8 @@ impl Language {
 
     pub fn tooltip_replace(&self) -> &'static str {
         match self {
-            Language::Russian => "Замена (Ctrl+H)",
-            Language::English => "Replace (Ctrl+H)",
+            Language::Russian => "Замена (Ctrl+R)",
+            Language::English => "Replace (Ctrl+R)",
         }
     }
 
