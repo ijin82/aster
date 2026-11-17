@@ -150,15 +150,24 @@ pub fn highlight_markdown_buffer(buffer: &gtk4::TextBuffer) {
     let mut in_code_block = false;
 
     for i in 0..line_count {
-        let line_start = buffer.iter_at_line(i).unwrap_or_else(|| buffer.end_iter());
-        let mut line_end = line_start;
-        line_end.forward_to_line_end();
+        // ВАЖНО: нельзя использовать `forward_to_line_end()` для пустой строки.
+        // В GTK он может уйти в конец следующей строки, из-за чего, например,
+        // пустая строка перед ```bash ошибочно считалась открывающим fence,
+        // а сама ```bash — закрывающим. В итоге код после блока терял подсветку.
+        // Поэтому конец строки вычисляется как позиция перед началом следующей.
+        let Some((line_start, line_end)) = line_bounds(buffer, i) else {
+            continue;
+        };
 
         let line_text = buffer.text(&line_start, &line_end, false);
         let trimmed = line_text.trim_start();
 
-        // Проверяем многострочные блоки кода ```
-        if trimmed.starts_with("```") {
+        // Снимаем префиксы blockquote (`> `), чтобы распознавать code fence
+        // и внутри цитат: `> ```bash ... > ``` `.
+        let fence_candidate = strip_blockquote_prefix(trimmed);
+        let is_fence = fence_candidate.starts_with("```") || fence_candidate.starts_with("~~~");
+
+        if is_fence {
             buffer.apply_tag_by_name("md-code", &line_start, &line_end);
             in_code_block = !in_code_block;
             continue;
@@ -199,6 +208,39 @@ pub fn highlight_markdown_buffer(buffer: &gtk4::TextBuffer) {
         // 4. Поиск инлайн-элементов: `код`, **жирный**, [текст](ссылка)
         highlight_inline(buffer, i, &line_text);
     }
+}
+
+/// Возвращает границы строки без завершающего перевода строки.
+///
+/// Конец вычисляется через начало следующей строки и `backward_char()`.
+/// Это надежнее, чем `forward_to_line_end()`: на пустой строке последний
+/// в GTK может перескочить на следующую строку и включить ее текст.
+fn line_bounds(
+    buffer: &gtk4::TextBuffer,
+    line_idx: i32,
+) -> Option<(gtk4::TextIter, gtk4::TextIter)> {
+    let start = buffer.iter_at_line(line_idx)?;
+
+    let end = match buffer.iter_at_line(line_idx + 1) {
+        Some(mut next_line_start) => {
+            next_line_start.backward_char();
+            next_line_start
+        }
+        None => buffer.end_iter(),
+    };
+
+    Some((start, end))
+}
+
+/// Убирает префиксы цитаты (`>`, `> >`) и пробелы после них.
+fn strip_blockquote_prefix(line: &str) -> &str {
+    let mut rest = line.trim_start();
+
+    while let Some(after_marker) = rest.strip_prefix('>') {
+        rest = after_marker.trim_start();
+    }
+
+    rest
 }
 
 /// Выделяет инлайн-элементы Markdown в пределах одной строки
@@ -266,5 +308,95 @@ fn highlight_inline(buffer: &gtk4::TextBuffer, line_idx: i32, text: &str) {
         }
 
         idx += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn highlighted_buffer(markdown: &str) -> gtk4::TextBuffer {
+        let tag_table = gtk4::TextTagTable::new();
+        register_highlight_tags(&tag_table, "dracula", true);
+        let buffer = gtk4::TextBuffer::builder().tag_table(&tag_table).build();
+        buffer.set_text(markdown);
+        highlight_markdown_buffer(&buffer);
+        buffer
+    }
+
+    fn line_has_tag(buffer: &gtk4::TextBuffer, line: i32, tag_name: &str) -> bool {
+        let Some(iter) = buffer.iter_at_line(line) else {
+            return false;
+        };
+        iter.tags()
+            .iter()
+            .any(|tag| tag.name().as_deref() == Some(tag_name))
+    }
+
+    #[gtk4::test]
+    fn test_code_fence_after_empty_line() {
+        // Пустая строка перед fence — регрессия: раньше она ошибочно
+        // открывала/закрывала code block из-за forward_to_line_end().
+        let buffer = highlighted_buffer(
+            "intro\n\n```bash\n# this is a shell comment\necho hi\n```\n\nprose text\n",
+        );
+
+        assert!(line_has_tag(&buffer, 2, "md-code")); // ```bash
+        assert!(line_has_tag(&buffer, 3, "md-code")); // комментарий внутри кода
+        assert!(!line_has_tag(&buffer, 3, "md-header"));
+        assert!(line_has_tag(&buffer, 4, "md-code")); // echo hi
+        assert!(line_has_tag(&buffer, 5, "md-code")); // закрывающий fence
+
+        // После закрывающего fence обычный текст не должен оставаться кодом.
+        assert!(!line_has_tag(&buffer, 7, "md-code"));
+        assert!(!line_has_tag(&buffer, 7, "md-header"));
+    }
+
+    #[gtk4::test]
+    fn test_code_fence_inside_blockquote_and_after_it() {
+        let buffer = highlighted_buffer(
+            "> ```bash\n> echo hi\n> ```\n\n```rust\n# still code\n```\n\n# Heading\n",
+        );
+
+        assert!(line_has_tag(&buffer, 0, "md-code")); // > ```bash
+        assert!(line_has_tag(&buffer, 1, "md-code")); // > echo hi
+        assert!(line_has_tag(&buffer, 2, "md-code")); // > ```
+        assert!(line_has_tag(&buffer, 4, "md-code")); // ```rust
+        assert!(line_has_tag(&buffer, 5, "md-code")); // # still code, not heading
+        assert!(!line_has_tag(&buffer, 5, "md-header"));
+        assert!(line_has_tag(&buffer, 6, "md-code"));
+
+        // После блока кода заголовок снова подсвечивается как заголовок.
+        assert!(line_has_tag(&buffer, 8, "md-header"));
+        assert!(!line_has_tag(&buffer, 8, "md-code"));
+    }
+
+    #[gtk4::test]
+    fn test_real_readme_code_blocks_are_correct() {
+        // Регрессия из README: блок с комментариями install.sh и блок
+        // package-release.sh не должны «съедать» друг друга.
+        let buffer = highlighted_buffer(include_str!("../README.md"));
+
+        // Строки README 141-157 (0-based 140-156) — содержимое блока install.sh.
+        for line in 140..=156 {
+            let (start, end) = line_bounds(&buffer, line).expect("line bounds");
+            if buffer.text(&start, &end, false).trim().is_empty() {
+                continue;
+            }
+            assert!(
+                line_has_tag(&buffer, line, "md-code"),
+                "line {} must be code",
+                line + 1
+            );
+            assert!(
+                !line_has_tag(&buffer, line, "md-header"),
+                "line {} must not be a heading",
+                line + 1
+            );
+        }
+
+        // README line 160 (0-based 159) — обычный текст после блока.
+        assert!(!line_has_tag(&buffer, 159, "md-code"));
+        assert!(!line_has_tag(&buffer, 159, "md-header"));
     }
 }
