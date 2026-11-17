@@ -106,6 +106,16 @@ pub struct Document {
     pub search_bar: gtk4::SearchBar,
     /// Поле ввода поиска.
     pub search_entry: gtk4::SearchEntry,
+    /// Кнопка перехода к предыдущему совпадению.
+    pub search_prev_btn: gtk4::Button,
+    /// Кнопка перехода к следующему совпадению.
+    pub search_next_btn: gtk4::Button,
+    /// Счетчик вида «3 из 17» или «Нет совпадений».
+    pub search_status: gtk4::Label,
+    /// Позиции найденных совпадений в виде (начало, конец) по offset буфера.
+    search_matches: RefCell<Vec<(i32, i32)>>,
+    /// Индекс текущего совпадения в `search_matches`.
+    search_index: Cell<usize>,
     /// Текстовый буфер редактора.
     pub buffer: gtk4::TextBuffer,
     /// Виджет редактора.
@@ -184,8 +194,28 @@ impl Document {
         let search_entry = gtk4::SearchEntry::new();
         search_entry.set_hexpand(true);
         search_entry.set_placeholder_text(Some(lang.search_placeholder()));
+
+        let search_prev_btn = gtk4::Button::from_icon_name("go-up-symbolic");
+        search_prev_btn.add_css_class("flat");
+        search_prev_btn.set_tooltip_text(Some(lang.tooltip_search_previous()));
+        search_prev_btn.set_sensitive(false);
+
+        let search_next_btn = gtk4::Button::from_icon_name("go-down-symbolic");
+        search_next_btn.add_css_class("flat");
+        search_next_btn.set_tooltip_text(Some(lang.tooltip_search_next()));
+        search_next_btn.set_sensitive(false);
+
+        let search_status = gtk4::Label::new(None);
+        search_status.add_css_class("dim-label");
+        search_status.add_css_class("numeric");
+        search_status.set_width_chars(9);
+        search_status.set_xalign(0.5);
+
         let search_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
         search_box.append(&search_entry);
+        search_box.append(&search_status);
+        search_box.append(&search_prev_btn);
+        search_box.append(&search_next_btn);
         search_bar.set_child(Some(&search_box));
         search_bar.connect_entry(&search_entry);
 
@@ -269,6 +299,11 @@ impl Document {
             view_stack,
             search_bar,
             search_entry,
+            search_prev_btn,
+            search_next_btn,
+            search_status,
+            search_matches: RefCell::new(Vec::new()),
+            search_index: Cell::new(0),
             buffer,
             text_view,
             editor_scroll,
@@ -317,6 +352,7 @@ impl Document {
                 doc.is_modified.set(true);
                 doc.gutter.queue_draw();
                 highlighter::highlight_markdown_buffer(buf);
+                doc.refresh_search_matches(false);
                 doc.update_tab_title();
             }
         });
@@ -679,6 +715,11 @@ impl Document {
             .set_title(Some(lang.tab_preview()));
         self.search_entry
             .set_placeholder_text(Some(lang.search_placeholder()));
+        self.search_prev_btn
+            .set_tooltip_text(Some(lang.tooltip_search_previous()));
+        self.search_next_btn
+            .set_tooltip_text(Some(lang.tooltip_search_next()));
+        self.update_search_status();
         self.update_tab_title();
     }
 
@@ -705,9 +746,12 @@ impl Document {
     }
 
     /// Подключает поиск по буферу документа.
-    fn setup_search(&self) {
-        let buffer = self.buffer.clone();
-        let text_view = self.text_view.clone();
+    ///
+    /// Все совпадения подсвечиваются тегом `search-match`, текущее — более
+    /// контрастным `search-current`. Состояние хранится в offset'ах буфера,
+    /// поэтому после редактирования список пересчитывается, а не ссылается
+    /// на устаревшие `TextIter`.
+    fn setup_search(self: &Rc<Self>) {
         let tag_table = self.tag_table.clone();
 
         let highlight_tag = gtk4::TextTag::builder()
@@ -717,38 +761,219 @@ impl Document {
             .build();
         tag_table.add(&highlight_tag);
 
-        self.search_entry.connect_search_changed(move |entry| {
-            let query = entry.text().to_string();
-            let start = buffer.start_iter();
-            let end = buffer.end_iter();
-            buffer.remove_tag_by_name("search-match", &start, &end);
+        let current_tag = gtk4::TextTag::builder()
+            .name("search-current")
+            .background("#f97316")
+            .foreground("#fff7ed")
+            .weight(700)
+            .build();
+        tag_table.add(&current_tag);
+        current_tag.set_priority(highlight_tag.priority() + 1);
 
-            if query.is_empty() {
-                return;
-            }
-
-            let mut iter = buffer.start_iter();
-            let mut first_match = None;
-
-            while let Some((match_start, match_end)) = iter.forward_search(
-                &query,
-                gtk4::TextSearchFlags::CASE_INSENSITIVE,
-                None,
-            ) {
-                buffer.apply_tag_by_name("search-match", &match_start, &match_end);
-                if first_match.is_none() {
-                    first_match = Some(match_start);
-                }
-                iter = match_end;
-            }
-
-            if let Some(pos) = first_match {
-                buffer.place_cursor(&pos);
-                let mark = buffer.create_mark(None, &pos, false);
-                text_view.scroll_to_mark(&mark, 0.1, true, 0.0, 0.5);
-                buffer.delete_mark(&mark);
+        // Ввод запроса: пересчитываем совпадения и начинаем с первого.
+        let weak_doc = Rc::downgrade(self);
+        self.search_entry.connect_search_changed(move |_| {
+            if let Some(doc) = weak_doc.upgrade() {
+                doc.refresh_search_matches(true);
             }
         });
+
+        // Enter — следующее совпадение, Shift+Enter — предыдущее.
+        let weak_doc = Rc::downgrade(self);
+        let key_controller = gtk4::EventControllerKey::new();
+        key_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        key_controller.connect_key_pressed(move |_, keyval, _, state| {
+            if keyval == gtk4::gdk::Key::Return || keyval == gtk4::gdk::Key::KP_Enter {
+                if let Some(doc) = weak_doc.upgrade() {
+                    let forward = !state.contains(gtk4::gdk::ModifierType::SHIFT_MASK);
+                    doc.navigate_search(forward);
+                }
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        self.search_entry.add_controller(key_controller);
+
+        // Кнопки навигации по совпадениям.
+        let weak_doc = Rc::downgrade(self);
+        self.search_prev_btn.connect_clicked(move |_| {
+            if let Some(doc) = weak_doc.upgrade() {
+                doc.navigate_search(false);
+            }
+        });
+        let weak_doc = Rc::downgrade(self);
+        self.search_next_btn.connect_clicked(move |_| {
+            if let Some(doc) = weak_doc.upgrade() {
+                doc.navigate_search(true);
+            }
+        });
+
+        // Закрытие панели убирает подсветку; повторное открытие с тем же
+        // запросом восстанавливает ее.
+        let weak_doc = Rc::downgrade(self);
+        self.search_bar
+            .connect_search_mode_enabled_notify(move |bar| {
+                if let Some(doc) = weak_doc.upgrade() {
+                    if bar.is_search_mode() {
+                        doc.refresh_search_matches(true);
+                    } else {
+                        doc.clear_search_highlights();
+                    }
+                }
+            });
+    }
+
+    /// Пересчитывает совпадения по текущему запросу.
+    ///
+    /// `reset_current` используется при смене запроса: начинаем с первого
+    /// совпадения. При редактировании текста текущий индекс сохраняется,
+    /// насколько это возможно.
+    fn refresh_search_matches(&self, reset_current: bool) {
+        // Пока панель поиска закрыта, редактирование текста не должно
+        // возвращать подсветку старого запроса.
+        if !self.search_bar.is_search_mode() {
+            self.clear_search_highlights();
+            return;
+        }
+
+        let query = self.search_entry.text().to_string();
+        let start = self.buffer.start_iter();
+        let end = self.buffer.end_iter();
+
+        self.buffer.remove_tag_by_name("search-match", &start, &end);
+        self.buffer.remove_tag_by_name("search-current", &start, &end);
+
+        if query.is_empty() {
+            self.search_matches.borrow_mut().clear();
+            self.search_index.set(0);
+            self.update_search_status();
+            return;
+        }
+
+        let matches = find_matches(&self.buffer, &query);
+        let total = matches.len();
+
+        for &(match_start, match_end) in &matches {
+            let start_iter = self.buffer.iter_at_offset(match_start);
+            let end_iter = self.buffer.iter_at_offset(match_end);
+            self.buffer
+                .apply_tag_by_name("search-match", &start_iter, &end_iter);
+        }
+
+        let index = if reset_current || self.search_index.get() >= total {
+            0
+        } else {
+            self.search_index.get()
+        };
+
+        *self.search_matches.borrow_mut() = matches;
+        self.search_index.set(index);
+        self.update_search_status();
+        self.apply_current_search_match();
+    }
+
+    /// Переходит к следующему или предыдущему совпадению с заворотом.
+    fn navigate_search(&self, forward: bool) {
+        let total = self.search_matches.borrow().len();
+        let Some(index) = wrapped_search_index(self.search_index.get(), total, forward) else {
+            return;
+        };
+
+        self.search_index.set(index);
+        self.update_search_status();
+        self.apply_current_search_match();
+    }
+
+    /// Подсвечивает текущее совпадение и прокручивает к нему редактор.
+    fn apply_current_search_match(&self) {
+        let Some((match_start, match_end)) = self
+            .search_matches
+            .borrow()
+            .get(self.search_index.get())
+            .copied()
+        else {
+            return;
+        };
+
+        let start = self.buffer.start_iter();
+        let end = self.buffer.end_iter();
+        self.buffer
+            .remove_tag_by_name("search-current", &start, &end);
+
+        let mut match_start_iter = self.buffer.iter_at_offset(match_start);
+        let match_end_iter = self.buffer.iter_at_offset(match_end);
+        self.buffer.apply_tag_by_name(
+            "search-current",
+            &match_start_iter,
+            &match_end_iter,
+        );
+
+        self.buffer.place_cursor(&match_start_iter);
+        self.text_view
+            .scroll_to_iter(&mut match_start_iter, 0.1, true, 0.0, 0.5);
+    }
+
+    /// Убирает подсветку поиска при закрытии панели, сохраняя запрос.
+    fn clear_search_highlights(&self) {
+        let start = self.buffer.start_iter();
+        let end = self.buffer.end_iter();
+        self.buffer.remove_tag_by_name("search-match", &start, &end);
+        self.buffer.remove_tag_by_name("search-current", &start, &end);
+        self.search_matches.borrow_mut().clear();
+        self.search_index.set(0);
+        self.update_search_status();
+    }
+
+    /// Обновляет счетчик и доступность кнопок навигации.
+    fn update_search_status(&self) {
+        let lang = Language::from_code(&self.settings.borrow().language);
+        let total = self.search_matches.borrow().len();
+
+        self.search_prev_btn.set_sensitive(total > 0);
+        self.search_next_btn.set_sensitive(total > 0);
+
+        if !self.search_bar.is_search_mode() || self.search_entry.text().is_empty() {
+            self.search_status.set_text("");
+        } else if total == 0 {
+            self.search_status.set_text(lang.search_no_results());
+        } else {
+            self.search_status
+                .set_text(&lang.search_counter(self.search_index.get() + 1, total));
+        }
+    }
+}
+
+/// Находит все вхождения запроса и возвращает их диапазоны в offset'ах буфера.
+fn find_matches(buffer: &gtk4::TextBuffer, query: &str) -> Vec<(i32, i32)> {
+    let mut matches = Vec::new();
+    if query.is_empty() {
+        return matches;
+    }
+
+    let mut iter = buffer.start_iter();
+
+    while let Some((match_start, match_end)) = iter.forward_search(
+        query,
+        gtk4::TextSearchFlags::CASE_INSENSITIVE,
+        None,
+    ) {
+        matches.push((match_start.offset(), match_end.offset()));
+        iter = match_end;
+    }
+
+    matches
+}
+
+/// Вычисляет индекс следующего/предыдущего совпадения с заворотом.
+fn wrapped_search_index(current: usize, total: usize, forward: bool) -> Option<usize> {
+    if total == 0 {
+        return None;
+    }
+
+    if forward {
+        Some((current + 1) % total)
+    } else {
+        Some((current + total - 1) % total)
     }
 }
 
@@ -1151,6 +1376,30 @@ mod tests {
         unindent_selection_or_cursor(&buffer);
         let text_after_unindent = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
         assert_eq!(text_after_unindent.as_str(), "line 1\nline 2\nline 3\n");
+    }
+
+    #[gtk4::test]
+    fn test_find_matches_is_case_insensitive() {
+        let buffer = gtk4::TextBuffer::new(None);
+        buffer.set_text("Foo foo food\nbar\n");
+
+        let matches = find_matches(&buffer, "foo");
+        assert_eq!(matches.len(), 3);
+        assert_eq!(matches[0].0, 0);
+        assert_eq!(matches[1].0, 4);
+        assert_eq!(matches[2].0, 8);
+
+        assert!(find_matches(&buffer, "xyz").is_empty());
+        assert!(find_matches(&buffer, "").is_empty());
+    }
+
+    #[test]
+    fn test_wrapped_search_index() {
+        assert_eq!(wrapped_search_index(0, 3, true), Some(1));
+        assert_eq!(wrapped_search_index(2, 3, true), Some(0));
+        assert_eq!(wrapped_search_index(0, 3, false), Some(2));
+        assert_eq!(wrapped_search_index(2, 3, false), Some(1));
+        assert_eq!(wrapped_search_index(0, 0, true), None);
     }
 
     #[gtk4::test]

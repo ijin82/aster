@@ -79,6 +79,34 @@ impl Language {
         }
     }
 
+    pub fn tooltip_search_previous(&self) -> &'static str {
+        match self {
+            Language::Russian => "Предыдущее совпадение (Shift+Enter)",
+            Language::English => "Previous match (Shift+Enter)",
+        }
+    }
+
+    pub fn tooltip_search_next(&self) -> &'static str {
+        match self {
+            Language::Russian => "Следующее совпадение (Enter)",
+            Language::English => "Next match (Enter)",
+        }
+    }
+
+    pub fn search_no_results(&self) -> &'static str {
+        match self {
+            Language::Russian => "Нет совпадений",
+            Language::English => "No matches",
+        }
+    }
+
+    pub fn search_counter(&self, current: usize, total: usize) -> String {
+        match self {
+            Language::Russian => format!("{current} из {total}"),
+            Language::English => format!("{current} of {total}"),
+        }
+    }
+
     pub fn tooltip_menu(&self) -> &'static str {
         match self {
             Language::Russian => "Главное меню",
