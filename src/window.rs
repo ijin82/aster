@@ -414,7 +414,6 @@ pub fn build_window(
             filter.set_name(Some(lang.filter_markdown()));
             filter.add_pattern("*.md");
             filter.add_pattern("*.markdown");
-            filter.add_pattern("*.rmd");
             let filters = gio::ListStore::new::<gtk4::FileFilter>();
             filters.append(&filter);
             dialog.set_filters(Some(&filters));

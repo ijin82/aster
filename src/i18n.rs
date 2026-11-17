@@ -313,8 +313,8 @@ impl Language {
 
     pub fn filter_markdown(&self) -> &'static str {
         match self {
-            Language::Russian => "Markdown (*.md, *.markdown, *.rmd)",
-            Language::English => "Markdown (*.md, *.markdown, *.rmd)",
+            Language::Russian => "Markdown (*.md, *.markdown)",
+            Language::English => "Markdown (*.md, *.markdown)",
         }
     }
 

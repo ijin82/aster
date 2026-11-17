@@ -10,8 +10,6 @@
 
 Главная цель проекта — служить понятным практическим пособием по созданию графических Linux-приложений на Rust с соблюдением стандартов GNOME Human Interface Guidelines (HIG).
 
-> Проект ранее назывался **rmd-view** (Rust Markdown View). При первом запуске Aster автоматически читает старые настройки из `~/.config/rmd-view/settings.json`, а затем сохраняет их уже в `~/.config/aster/settings.json`.
-
 ---
 
 ## 🎯 Основные возможности
@@ -237,7 +235,7 @@ cargo run -- test.md
 - [`src/i18n.rs`](src/i18n.rs) — типизированная интернационализация и переводы элементов интерфейса (русский и английский языки).
 - [`src/renderer.rs`](src/renderer.rs) — парсинг Markdown с флагами GFM через `pulldown-cmark` и внедрение `github-markdown-css` во встроенный HTML-шаблон.
 - [`src/shortcuts.rs`](src/shortcuts.rs) — независимое от раскладки сопоставление hardware keycode с латинскими горячими клавишами (Wayland/X11 fallback).
-- [`src/settings.rs`](src/settings.rs) — сохранение структуры настроек, геометрии окна, позиций прокрутки и списка вкладок в JSON через `serde` и библиотеку `dirs` для работы с XDG Base Directory. Здесь же реализована мягкая миграция из старого каталога `rmd-view`.
+- [`src/settings.rs`](src/settings.rs) — сохранение структуры настроек, геометрии окна, позиций прокрутки и списка вкладок в JSON через `serde` и библиотеку `dirs` для работы с XDG Base Directory.
 - [`install.sh`](install.sh) — установка и удаление приложения: сборка, `~/.local/bin`, SVG/PNG-иконки, desktop-entry, ярлык на рабочем столе.
 - [`package-release.sh`](package-release.sh) — проверка версии, релизная сборка, `strip`, `tar.gz` и контрольная сумма SHA-256.
 - [`Makefile`](Makefile) — краткие команды `make build`, `make test`, `make install`, `make package`.

@@ -10,8 +10,6 @@
 
 The main goal of the project is to serve as a clear, practical guide to building Linux GUI applications in Rust while following the GNOME Human Interface Guidelines (HIG).
 
-> The project was formerly called **rmd-view** (Rust Markdown View). On first launch, Aster automatically reads the old settings from `~/.config/rmd-view/settings.json` and then stores them in `~/.config/aster/settings.json`.
-
 ---
 
 ## 🎯 Key features
@@ -231,7 +229,7 @@ The source code is thoroughly commented in Russian:
 - [`src/i18n.rs`](src/i18n.rs) — typed internationalization and UI translations (Russian and English).
 - [`src/renderer.rs`](src/renderer.rs) — Markdown parsing with GFM flags via `pulldown-cmark` and injection of `github-markdown-css` into the embedded HTML template.
 - [`src/shortcuts.rs`](src/shortcuts.rs) — layout-independent mapping of hardware keycodes to Latin shortcuts (Wayland/X11 fallback).
-- [`src/settings.rs`](src/settings.rs) — persistence of settings structure, window geometry, scroll positions, and the tab list as JSON via `serde` and the `dirs` crate for XDG Base Directory support. It also implements a soft migration from the old `rmd-view` directory.
+- [`src/settings.rs`](src/settings.rs) — persistence of settings structure, window geometry, scroll positions, and the tab list as JSON via `serde` and the `dirs` crate for XDG Base Directory support.
 - [`install.sh`](install.sh) — application installation and removal: build, `~/.local/bin`, SVG/PNG icons, desktop entry, and desktop shortcut.
 - [`package-release.sh`](package-release.sh) — version check, release build, `strip`, `tar.gz`, and SHA-256 checksum.
 - [`Makefile`](Makefile) — short commands `make build`, `make test`, `make install`, `make package`.
