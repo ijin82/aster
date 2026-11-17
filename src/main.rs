@@ -6,7 +6,12 @@
 
 use adw::prelude::*;
 use gtk4::glib::variant::ToVariant;
+use std::fs::OpenOptions;
+use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 mod document;
 mod highlighter;
 mod i18n;
@@ -18,6 +23,79 @@ mod window;
 
 /// Уникальный идентификатор приложения по стандарту Reverse-DNS (D-Bus ID).
 const APP_ID: &str = "io.github.aster";
+
+/// Нужно ли запускать GUI отдельным процессом.
+///
+/// Отсоединяемся только при запуске из настоящего терминала. Если stderr
+/// перенаправлен в файл, пользователь явно хочет видеть логи — оставляем
+/// процесс на переднем плане. `ASTER_FOREGROUND=1` отключает отсоединение.
+fn should_detach() -> bool {
+    if std::env::var_os("ASTER_DETACHED").is_some()
+        || std::env::var_os("ASTER_FOREGROUND").is_some()
+    {
+        return false;
+    }
+
+    std::io::stderr().is_terminal()
+}
+
+/// Запускает копию Aster в фоне и перенаправляет ее вывод в лог.
+///
+/// Возвращает `true`, если родительский процесс может завершиться. При
+/// ошибке `spawn` возвращает `false`, и приложение продолжает работу в
+/// текущем процессе — лучше показать предупреждение в консоли, чем не
+/// запустить редактор вообще.
+fn detach_from_terminal() -> bool {
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+
+    let log_file = dirs::cache_dir().and_then(|dir| {
+        let dir = dir.join("aster");
+        std::fs::create_dir_all(&dir).ok()?;
+        OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(dir.join("aster.log"))
+            .ok()
+    });
+
+    let mut command = Command::new(exe);
+    command
+        .args(std::env::args_os().skip(1))
+        .env("ASTER_DETACHED", "1")
+        .stdin(Stdio::null());
+
+    // Новая сессия отвязывает GUI от управляющего терминала: закрытие
+    // терминала или выход из `script` не должен убивать редактор.
+    // SAFETY: `pre_exec` выполняется между fork и exec. `setsid` —
+    // async-signal-safe системный вызов и не обращается к памяти процесса.
+    #[cfg(unix)]
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    match log_file {
+        Some(file) => {
+            let stderr_file = match file.try_clone() {
+                Ok(file) => file,
+                Err(_) => return false,
+            };
+            command.stdout(Stdio::from(file)).stderr(Stdio::from(stderr_file));
+        }
+        None => {
+            command.stdout(Stdio::null()).stderr(Stdio::null());
+        }
+    }
+
+    command.spawn().is_ok()
+}
 
 fn main() {
     // `--version` и `--help` обрабатываем до инициализации GTK, чтобы они
@@ -31,8 +109,16 @@ fn main() {
         println!(
             "Aster — просмотрщик и редактор Markdown\n\n\
              Использование: aster [ФАЙЛ ...]\n\n\
-             Параметры:\n  -h, --help     показать эту справку\n  -V, --version  показать версию"
+             Параметры:\n  -h, --help     показать эту справку\n  -V, --version  показать версию\n\n\
+             Переменные окружения:\n  ASTER_FOREGROUND=1  не отсоединяться от терминала"
         );
+        return;
+    }
+
+    // Как `code` из VS Code: при запуске из терминала возвращаем приглашение
+    // сразу, а GUI продолжаем в отдельном процессе. Иначе GTK-предупреждения
+    // и прочий вывод остаются в консоли пользователя и мешают работе.
+    if should_detach() && detach_from_terminal() {
         return;
     }
 

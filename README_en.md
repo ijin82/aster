@@ -177,8 +177,8 @@ To install icons in PNG formats, the script uses `rsvg-convert` or Python bindin
 ### 4. Building the release archive
 
 ```bash
-# Prepare a v0.6.0 release with one command
-./package-release.sh v0.6.0
+# Prepare a v0.6.1 release with one command
+./package-release.sh v0.6.1
 
 # Without an argument, the current version from VERSION is used
 ./package-release.sh
@@ -199,6 +199,15 @@ cargo run -- test.md
 
 # Check the version without launching the GUI
 ./target/release/aster --version
+```
+
+When launched from a terminal, Aster behaves like VS Code's `code` command:
+the shell prompt returns immediately while the GUI keeps running in a separate
+process. GTK output is written to `~/.cache/aster/aster.log`. To keep the
+process in the foreground and see logs in the terminal:
+
+```bash
+ASTER_FOREGROUND=1 aster test.md
 ```
 
 ---

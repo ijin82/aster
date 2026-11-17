@@ -4,11 +4,12 @@ version = 4
 
 [[package]]
 name = "aster"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "dirs",
  "gtk4",
  "libadwaita",
+ "libc",
  "pulldown-cmark",
  "serde",
  "serde_json",
