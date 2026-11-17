@@ -492,8 +492,9 @@ impl Document {
     /// Внутренние якоря прокручиваются внутри страницы, внешние URI
     /// открываются системным обработчиком, а сам WebView не уходит
     /// с текущего HTML-документа.
-    fn setup_link_policy(&self) {
+    fn setup_link_policy(self: &Rc<Self>) {
         let web_view = self.web_view.clone();
+        let weak_doc = Rc::downgrade(self);
 
         self.web_view.connect_decide_policy(
             move |_web_view, decision, decision_type| {
@@ -529,7 +530,14 @@ impl Document {
                     .unwrap_or_default()
                     .to_string();
 
-                match classify_link_uri(&uri) {
+                // Для ссылок #fragment WebKit с base href превращает URI
+                // в file:///каталог/#fragment. Сравниваем базу с текущим
+                // файлом, чтобы не отдавать такой якорь Nautilus.
+                let current_file = weak_doc
+                    .upgrade()
+                    .and_then(|doc| doc.current_file.borrow().clone());
+
+                match classify_link_uri(&uri, current_file.as_deref()) {
                     LinkTarget::Anchor(id) => {
                         let id_json = serde_json::to_string(&id)
                             .unwrap_or_else(|_| "\"\"".to_string());
@@ -554,12 +562,24 @@ impl Document {
                         true
                     }
                     LinkTarget::External(uri) => {
-                        if let Err(error) = gio::AppInfo::launch_default_for_uri(
+                        // Асинхронный запуск не блокирует UI-поток, пока
+                        // система запускает браузер или другой обработчик.
+                        let uri_for_callback = uri.clone();
+                        gio::AppInfo::launch_default_for_uri_async(
                             &uri,
                             Option::<&gio::AppLaunchContext>::None,
-                        ) {
-                            glib::g_warning!("Aster", "Failed to open external link {}: {}", uri, error);
-                        }
+                            Option::<&gio::Cancellable>::None,
+                            move |result| {
+                                if let Err(error) = result {
+                                    glib::g_warning!(
+                                        "Aster",
+                                        "Failed to open external link {}: {}",
+                                        uri_for_callback,
+                                        error
+                                    );
+                                }
+                            },
+                        );
                         decision.ignore();
                         true
                     }
@@ -1101,11 +1121,21 @@ enum LinkTarget {
 ///
 /// Навигация по самому WebView запрещена: разрешены только внутренние
 /// якоря и передача внешнего URI системному приложению.
-fn classify_link_uri(uri: &str) -> LinkTarget {
+///
+/// `current_file` нужен потому, что при `base href="file:///dir/"` WebKit
+/// превращает `#fragment` в `file:///dir/#fragment`. Такой URI является
+/// якорем текущего документа, а не ссылкой на файловый менеджер.
+fn classify_link_uri(uri: &str, current_file: Option<&Path>) -> LinkTarget {
     let uri = uri.trim();
 
-    if uri.starts_with('#') {
-        return LinkTarget::Anchor(uri.trim_start_matches('#').to_string());
+    if let Some((base, fragment)) = uri.split_once('#') {
+        if base.is_empty()
+            || current_file
+                .map(|file| is_current_document_base(base, file))
+                .unwrap_or(false)
+        {
+            return LinkTarget::Anchor(fragment.to_string());
+        }
     }
 
     let lower = uri.to_ascii_lowercase();
@@ -1118,6 +1148,31 @@ fn classify_link_uri(uri: &str) -> LinkTarget {
     } else {
         LinkTarget::Blocked
     }
+}
+
+/// Проверяет, совпадает ли база URI с текущим файлом или его каталогом.
+fn is_current_document_base(base: &str, current_file: &Path) -> bool {
+    let file = current_file.to_string_lossy();
+    let file_url = format!("file://{file}");
+
+    if base == file_url {
+        return true;
+    }
+
+    if let Some(parent) = current_file.parent() {
+        let parent = parent.to_string_lossy();
+        let dir_url = if parent.ends_with('/') {
+            format!("file://{parent}")
+        } else {
+            format!("file://{parent}/")
+        };
+
+        if base == dir_url || base.trim_end_matches('/') == dir_url.trim_end_matches('/') {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Находит все вхождения запроса и возвращает их диапазоны в offset'ах буфера.
@@ -1582,28 +1637,53 @@ mod tests {
     #[test]
     fn test_classify_link_uri() {
         assert_eq!(
-            classify_link_uri("#section-1"),
+            classify_link_uri("#section-1", None),
             LinkTarget::Anchor("section-1".to_string())
         );
         assert_eq!(
-            classify_link_uri("#"),
+            classify_link_uri("#", None),
             LinkTarget::Anchor(String::new())
         );
         assert_eq!(
-            classify_link_uri("https://example.com"),
+            classify_link_uri("https://example.com", None),
             LinkTarget::External("https://example.com".to_string())
         );
         assert_eq!(
-            classify_link_uri("MAILTO:test@example.com"),
+            classify_link_uri("MAILTO:test@example.com", None),
             LinkTarget::External("MAILTO:test@example.com".to_string())
         );
         assert_eq!(
-            classify_link_uri("file:///tmp/other.md"),
+            classify_link_uri("file:///tmp/other.md", None),
             LinkTarget::External("file:///tmp/other.md".to_string())
         );
-        assert_eq!(classify_link_uri("javascript:alert(1)"), LinkTarget::Blocked);
-        assert_eq!(classify_link_uri("data:text/html,hi"), LinkTarget::Blocked);
-        assert_eq!(classify_link_uri("relative/file.md"), LinkTarget::Blocked);
+        assert_eq!(
+            classify_link_uri("javascript:alert(1)", None),
+            LinkTarget::Blocked
+        );
+        assert_eq!(
+            classify_link_uri("data:text/html,hi", None),
+            LinkTarget::Blocked
+        );
+        assert_eq!(
+            classify_link_uri("relative/file.md", None),
+            LinkTarget::Blocked
+        );
+
+        // Регрессия: base href="file:///tmp/" превращает #anchor
+        // в file:///tmp/#anchor. Это внутренний якорь, а не ссылка на /tmp.
+        let current = std::path::Path::new("/tmp/aster-links.md");
+        assert_eq!(
+            classify_link_uri("file:///tmp/#target", Some(current)),
+            LinkTarget::Anchor("target".to_string())
+        );
+        assert_eq!(
+            classify_link_uri("file:///tmp/aster-links.md#target", Some(current)),
+            LinkTarget::Anchor("target".to_string())
+        );
+        assert_eq!(
+            classify_link_uri("https://example.com#target", Some(current)),
+            LinkTarget::External("https://example.com#target".to_string())
+        );
     }
 
     #[gtk4::test]
