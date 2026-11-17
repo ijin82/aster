@@ -144,6 +144,7 @@ echo "    + assets/${APP_NAME}.svg"
 
 copy_if_exists "README.md"
 copy_if_exists "README_en.md"
+copy_if_exists "ROADMAP.md"
 copy_if_exists "LICENSE"
 copy_if_exists "VERSION"
 

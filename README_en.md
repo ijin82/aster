@@ -203,6 +203,12 @@ cargo run -- test.md
 
 ---
 
+## 🗺️ Roadmap
+
+The current backlog of ideas and improvements is maintained in [ROADMAP.md](ROADMAP.md): reliability, architecture, search, performance, and UX.
+
+---
+
 ## 📚 Project architecture and what you can learn here
 
 The source code is thoroughly commented in Russian:
