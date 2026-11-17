@@ -736,7 +736,7 @@ impl Document {
 
         // 5. Клавиатура: Tab/Shift+Tab для отступов и подавление звука
         //    на границах документа.
-        setup_editor_key_handling(&self.text_view);
+        setup_editor_key_handling(&self.text_view, &self.editor_scroll);
 
         // 6. Поиск по буферу текущего документа.
         self.setup_search();

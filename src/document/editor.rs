@@ -65,12 +65,18 @@ pub(super) fn schedule_cursor_scroll(
 }
 
 /// Настраивает Tab/Shift+Tab и подавляет системный звук на границах текста.
-pub(super) fn setup_editor_key_handling(text_view: &gtk4::TextView) {
+pub(super) fn setup_editor_key_handling(
+    text_view: &gtk4::TextView,
+    editor_scroll: &gtk4::ScrolledWindow,
+) {
     let key_controller = gtk4::EventControllerKey::new();
     key_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
 
     // WeakRef разрывает цикл TextView -> controller -> handler -> TextView.
     let text_view_weak = text_view.downgrade();
+    // ScrolledWindow владеет TextView. Сильная ссылка из controller в
+    // ScrolledWindow создала бы цикл, поэтому храним слабую ссылку.
+    let editor_scroll_weak = editor_scroll.downgrade();
 
     key_controller.connect_key_pressed(move |_, keyval, keycode, state| {
         let Some(text_view) = text_view_weak.upgrade() else {
@@ -80,7 +86,31 @@ pub(super) fn setup_editor_key_handling(text_view: &gtk4::TextView) {
         let is_control = state.contains(gtk4::gdk::ModifierType::CONTROL_MASK);
         let is_alt = state.contains(gtk4::gdk::ModifierType::ALT_MASK);
 
-        if is_control {
+        if is_control && !is_alt {
+            let is_home =
+                keyval == gtk4::gdk::Key::Home || keyval == gtk4::gdk::Key::KP_Home;
+            let is_end = keyval == gtk4::gdk::Key::End || keyval == gtk4::gdk::Key::KP_End;
+
+            // Ctrl+Home / Ctrl+End — начало и конец текущего документа.
+            // Shift+Ctrl+Home/End не перехватываем, чтобы не ломать
+            // стандартное выделение текста.
+            if (is_home || is_end)
+                && !state.contains(gtk4::gdk::ModifierType::SHIFT_MASK)
+            {
+                let Some(editor_scroll) = editor_scroll_weak.upgrade() else {
+                    return glib::Propagation::Proceed;
+                };
+                let buffer = text_view.buffer();
+                let mut iter = if is_home {
+                    buffer.start_iter()
+                } else {
+                    buffer.end_iter()
+                };
+                buffer.place_cursor(&iter);
+                scroll_to_edge(&text_view, &editor_scroll, &mut iter, is_home);
+                return glib::Propagation::Stop;
+            }
+
             return glib::Propagation::Proceed;
         }
 
@@ -145,6 +175,24 @@ pub(super) fn setup_editor_key_handling(text_view: &gtk4::TextView) {
     });
 
     text_view.add_controller(key_controller);
+}
+
+/// Прокручивает редактор к началу или концу документа.
+///
+/// После программной прокрутки горизонтальный adjustment возвращается
+/// в ноль: иначе в режиме переноса строк справа появляется пустая полоса.
+fn scroll_to_edge(
+    text_view: &gtk4::TextView,
+    editor_scroll: &gtk4::ScrolledWindow,
+    iter: &mut gtk4::TextIter,
+    is_home: bool,
+) {
+    let yalign = if is_home { 0.0 } else { 1.0 };
+    text_view.scroll_to_iter(iter, 0.0, true, 0.0, yalign);
+
+    let adjustment = editor_scroll.hadjustment();
+    adjustment.set_value(0.0);
+    glib::idle_add_local_once(move || adjustment.set_value(0.0));
 }
 
 /// Дублирует строку под курсором и ставит курсор на копию.

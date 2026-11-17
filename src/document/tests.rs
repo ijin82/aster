@@ -138,9 +138,14 @@ use super::*;
         let text_view = gtk4::TextView::new();
         let weak_text_view = text_view.downgrade();
 
-        setup_editor_key_handling(&text_view);
+        let editor_scroll = gtk4::ScrolledWindow::new();
+        editor_scroll.set_child(Some(&text_view));
+        setup_editor_key_handling(&text_view, &editor_scroll);
 
         drop(text_view);
+        // ScrolledWindow владеет TextView, поэтому сначала освобождаем
+        // контейнер, иначе weak-проверка сработает на дочерний виджет.
+        drop(editor_scroll);
         assert!(
             weak_text_view.upgrade().is_none(),
             "key controller keeps TextView alive"

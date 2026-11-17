@@ -26,6 +26,7 @@ The main goal of the project is to serve as a clear, practical guide to building
   - Configurable monospace font family, soft line wrapping, and padding.
   - **Quick line indentation (`Tab` / `Shift+Tab`)**: when text is selected, pressing `Tab` adds two spaces to the beginning of each selected line, while `Shift+Tab` removes up to two spaces from the beginning of the lines (preserving selection boundaries and supporting undo with `Ctrl+Z`).
   - **Duplicate line `Alt+D`**: a copy of the line under the cursor is inserted below, and the cursor moves to the copy in the same column.
+  - **Move to the beginning and end of the document (`Ctrl+Home` / `Ctrl+End`)**: the cursor moves to the start or end of the current file, and the editor scrolls to the corresponding edge without horizontal shifting.
   - **Meditation mode `Ctrl+Shift+H`**: hides the HeaderBar with menus and buttons, leaving only the text. If a single tab is open, the editor fills the entire window; pressing the shortcut again restores the panel.
 - **GitHub-style Markdown preview**:
   - Quick switching with `Ctrl+E` (like in Obsidian) or with the toggle in the window header.
