@@ -257,6 +257,22 @@ pub fn render_markdown_to_html(
             border-left: 0.25em solid {border_default} !important;
             opacity: 0.85;
         }}
+
+        /* --- Подсветка поиска в предпросмотре --- */
+        mark.aster-search-match {{
+            background-color: #f5a97f !important;
+            color: #181926 !important;
+            border-radius: 2px;
+            padding: 0;
+        }}
+
+        mark.aster-search-current {{
+            background-color: #f97316 !important;
+            color: #fff7ed !important;
+            border-radius: 2px;
+            padding: 0;
+            font-weight: 700;
+        }}
     </style>
 </head>
 <body class="markdown-body" data-theme="{theme_mode}">
@@ -289,6 +305,8 @@ mod tests {
         assert!(!html.contains("<script>"));
         assert!(html.contains("Content-Security-Policy"));
         assert!(html.contains("script-src 'none'"));
+        assert!(html.contains("mark.aster-search-match"));
+        assert!(html.contains("mark.aster-search-current"));
     }
 
     #[test]

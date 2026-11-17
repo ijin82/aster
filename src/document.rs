@@ -85,6 +85,153 @@ const SCROLL_TRACKER_SCRIPT: &str = r#"
         installHeadingAnchors();
     }
 
+    // Поиск по видимому тексту предпросмотра. Mark-элементы создаются
+    // только в DOM, исходный Markdown и GtkTextBuffer не меняются.
+    window.__asterSearch = (function () {
+        var marks = [];
+        var current = -1;
+
+        function result() {
+            return JSON.stringify({ count: marks.length, index: current });
+        }
+
+        function updateCurrent(scrollToCurrent) {
+            for (var i = 0; i < marks.length; i++) {
+                marks[i].className = 'aster-search-match';
+            }
+            if (current >= 0 && marks[current]) {
+                marks[current].className = 'aster-search-current';
+                if (scrollToCurrent) {
+                    marks[current].scrollIntoView({ block: 'center', inline: 'nearest' });
+                }
+            }
+        }
+
+        function clear() {
+            var found = document.querySelectorAll(
+                'mark.aster-search-match, mark.aster-search-current'
+            );
+            var parents = [];
+
+            for (var i = found.length - 1; i >= 0; i--) {
+                var mark = found[i];
+                var parent = mark.parentNode;
+                if (!parent) {
+                    continue;
+                }
+                while (mark.firstChild) {
+                    parent.insertBefore(mark.firstChild, mark);
+                }
+                parent.removeChild(mark);
+                if (parents.indexOf(parent) === -1) {
+                    parents.push(parent);
+                }
+            }
+
+            for (var j = 0; j < parents.length; j++) {
+                parents[j].normalize();
+            }
+
+            marks = [];
+            current = -1;
+        }
+
+        function find(query) {
+            clear();
+            if (!query) {
+                return result();
+            }
+
+            var lowerQuery = query.toLowerCase();
+            var nodes = [];
+            var walker = document.createTreeWalker(
+                document.body,
+                NodeFilter.SHOW_TEXT,
+                {
+                    acceptNode: function (node) {
+                        var parent = node.parentElement;
+                        if (!parent) {
+                            return NodeFilter.FILTER_REJECT;
+                        }
+                        if (parent.closest('script,style,noscript,textarea')) {
+                            return NodeFilter.FILTER_REJECT;
+                        }
+                        var style = window.getComputedStyle(parent);
+                        if (style.display === 'none' || style.visibility === 'hidden') {
+                            return NodeFilter.FILTER_REJECT;
+                        }
+                        if (!node.nodeValue || !node.nodeValue.trim()) {
+                            return NodeFilter.FILTER_REJECT;
+                        }
+                        return NodeFilter.FILTER_ACCEPT;
+                    }
+                }
+            );
+
+            while (walker.nextNode()) {
+                nodes.push(walker.currentNode);
+            }
+
+            for (var n = 0; n < nodes.length; n++) {
+                var node = nodes[n];
+                var text = node.nodeValue || '';
+                var lowerText = text.toLowerCase();
+                var positions = [];
+                var from = 0;
+
+                while (true) {
+                    var index = lowerText.indexOf(lowerQuery, from);
+                    if (index === -1) {
+                        break;
+                    }
+                    positions.push(index);
+                    from = index + Math.max(1, lowerQuery.length);
+                }
+
+                if (!positions.length) {
+                    continue;
+                }
+
+                var nodeMarks = new Array(positions.length);
+                for (var i = positions.length - 1; i >= 0; i--) {
+                    var range = document.createRange();
+                    range.setStart(node, positions[i]);
+                    range.setEnd(node, positions[i] + query.length);
+                    var mark = document.createElement('mark');
+                    mark.className = 'aster-search-match';
+                    mark.appendChild(range.extractContents());
+                    range.insertNode(mark);
+                    nodeMarks[i] = mark;
+                }
+
+                for (var k = 0; k < nodeMarks.length; k++) {
+                    if (nodeMarks[k]) {
+                        marks.push(nodeMarks[k]);
+                    }
+                }
+            }
+
+            current = marks.length ? 0 : -1;
+            updateCurrent(true);
+            return result();
+        }
+
+        function next(forward) {
+            if (!marks.length) {
+                return result();
+            }
+            current = (current + (forward ? 1 : -1) + marks.length) % marks.length;
+            updateCurrent(true);
+            return result();
+        }
+
+        return {
+            find: find,
+            next: next,
+            clear: clear
+        };
+    })();
+
     var scheduled = false;
 
     function report() {
@@ -171,6 +318,12 @@ pub struct Document {
     search_matches: RefCell<Vec<(i32, i32)>>,
     /// Индекс текущего совпадения в `search_matches`.
     search_index: Cell<usize>,
+    /// Количество совпадений в предпросмотре (приходит из JavaScript).
+    preview_search_count: Cell<usize>,
+    /// Индекс текущего совпадения в предпросмотре.
+    preview_search_index: Cell<usize>,
+    /// Номер поколения preview-поиска: защищает от запоздавших JS-ответов.
+    preview_search_generation: Cell<u64>,
     /// Текстовый буфер редактора.
     pub buffer: gtk4::TextBuffer,
     /// Виджет редактора.
@@ -411,6 +564,9 @@ impl Document {
             suppress_search_refresh: Cell::new(false),
             search_matches: RefCell::new(Vec::new()),
             search_index: Cell::new(0),
+            preview_search_count: Cell::new(0),
+            preview_search_index: Cell::new(0),
+            preview_search_generation: Cell::new(0),
             buffer,
             text_view,
             editor_scroll,
@@ -440,6 +596,8 @@ impl Document {
             doc.view_stack.set_visible_child_name("preview");
             doc.refresh_preview();
         }
+        // В предпросмотре замена не имеет смысла — оставляем только поиск.
+        doc.replace_toggle.set_visible(!initial_preview_active);
 
         Ok(doc)
     }
@@ -505,6 +663,7 @@ impl Document {
         //    `pending_preview_scroll` защищает от гонки со скриптом отслеживания,
         //    который может успеть сообщить 0 до программной прокрутки.
         let pending_for_load = pending_preview_scroll.clone();
+        let weak_doc_for_load = Rc::downgrade(self);
         self.web_view.connect_load_changed(move |view, event| {
             if event == webkit6::LoadEvent::Finished {
                 if let Some(y) = pending_for_load.take() {
@@ -525,6 +684,17 @@ impl Document {
                         Option::<&gio::Cancellable>::None,
                         |_| {},
                     );
+                }
+
+                // После перезагрузки HTML нужно заново наложить подсветку
+                // поиска: старые mark-элементы исчезли вместе с DOM.
+                if let Some(doc) = weak_doc_for_load.upgrade() {
+                    if doc.is_preview_active.get()
+                        && doc.search_bar.is_search_mode()
+                        && !doc.search_entry.text().is_empty()
+                    {
+                        doc.refresh_preview_search(true);
+                    }
                 }
             }
         });
@@ -715,6 +885,11 @@ impl Document {
         self.editor_scroll_position
             .set(self.editor_scroll.vadjustment().value());
 
+        // В предпросмотре доступен поиск, но не замена.
+        self.replace_toggle.set_active(false);
+        self.replace_row.set_visible(false);
+        self.replace_toggle.set_visible(false);
+
         self.is_preview_active.set(true);
         self.refresh_preview();
         self.view_stack.set_visible_child_name("preview");
@@ -733,10 +908,20 @@ impl Document {
         self.suppress_editor_scroll_updates.set(true);
         self.is_preview_active.set(false);
         self.view_stack.set_visible_child_name("editor");
+        self.replace_toggle.set_visible(true);
+        self.clear_preview_search();
 
         // Возвращаем ровно ту позицию прокрутки, которую пользователь
         // оставил в редакторе. Никаких вычислений по DOM не требуется.
         self.schedule_editor_scroll_to(target);
+
+        // Если поиск был открыт в предпросмотре, применяем тот же запрос
+        // к редактору.
+        if self.search_bar.is_search_mode() {
+            self.refresh_search_matches(true);
+        } else {
+            self.update_search_status();
+        }
     }
 
     /// Перерисовывает HTML-предпросмотр из текущего содержимого буфера.
@@ -1101,7 +1286,14 @@ impl Document {
     }
 
     /// Открывает панель поиска сразу в режиме замены (Ctrl+H).
-    pub fn open_replace_mode(&self) {
+    ///
+    /// Замена работает по тексту редактора, поэтому из предпросмотра
+    /// сначала переключаемся в редактор.
+    pub fn open_replace_mode(self: &Rc<Self>) {
+        if self.is_preview_active.get() {
+            self.switch_to_editor();
+        }
+
         self.search_bar.set_search_mode(true);
         self.replace_toggle.set_active(true);
         self.replace_row.set_visible(true);
@@ -1115,7 +1307,10 @@ impl Document {
     }
 
     /// Заменяет текущее совпадение и переходит к следующему.
-    fn replace_current(&self) {
+    fn replace_current(self: &Rc<Self>) {
+        if self.is_preview_active.get() {
+            return;
+        }
         let Some((match_start, match_end)) = self
             .search_matches
             .borrow()
@@ -1157,7 +1352,10 @@ impl Document {
     }
 
     /// Заменяет все совпадения одним действием Undo.
-    fn replace_all(&self) {
+    fn replace_all(self: &Rc<Self>) {
+        if self.is_preview_active.get() {
+            return;
+        }
         let query = self.search_entry.text().to_string();
         if query.is_empty() {
             return;
@@ -1178,11 +1376,16 @@ impl Document {
     /// `reset_current` используется при смене запроса: начинаем с первого
     /// совпадения. При редактировании текста текущий индекс сохраняется,
     /// насколько это возможно.
-    fn refresh_search_matches(&self, reset_current: bool) {
+    fn refresh_search_matches(self: &Rc<Self>, reset_current: bool) {
         // Пока панель поиска закрыта, редактирование текста не должно
         // возвращать подсветку старого запроса.
         if !self.search_bar.is_search_mode() {
             self.clear_search_highlights();
+            return;
+        }
+
+        if self.is_preview_active.get() {
+            self.refresh_preview_search(reset_current);
             return;
         }
 
@@ -1223,7 +1426,12 @@ impl Document {
     }
 
     /// Переходит к следующему или предыдущему совпадению с заворотом.
-    fn navigate_search(&self, forward: bool) {
+    fn navigate_search(self: &Rc<Self>, forward: bool) {
+        if self.is_preview_active.get() {
+            self.navigate_preview_search(forward);
+            return;
+        }
+
         let total = self.search_matches.borrow().len();
         let Some(index) = wrapped_search_index(self.search_index.get(), total, forward) else {
             return;
@@ -1271,18 +1479,126 @@ impl Document {
         self.buffer.remove_tag_by_name("search-current", &start, &end);
         self.search_matches.borrow_mut().clear();
         self.search_index.set(0);
+        self.clear_preview_search();
+        self.update_search_status();
+    }
+
+    /// Снимает preview-подсветку и сбрасывает ее счетчики.
+    fn clear_preview_search(&self) {
+        self.preview_search_generation
+            .set(self.preview_search_generation.get() + 1);
+        self.preview_search_count.set(0);
+        self.preview_search_index.set(0);
+
+        self.web_view.evaluate_javascript(
+            "if (window.__asterSearch) { window.__asterSearch.clear(); }",
+            None,
+            None,
+            Option::<&gio::Cancellable>::None,
+            |_| {},
+        );
+    }
+
+    /// Ищет видимый текст в HTML-предпросмотре через JavaScript.
+    fn refresh_preview_search(self: &Rc<Self>, _reset_current: bool) {
+        let query = self.search_entry.text().to_string();
+        let generation = self.preview_search_generation.get() + 1;
+        self.preview_search_generation.set(generation);
+
+        if query.is_empty() {
+            self.clear_preview_search();
+            self.update_search_status();
+            return;
+        }
+
+        let query_json = serde_json::to_string(&query)
+            .unwrap_or_else(|_| "\"\"".to_string());
+        let script = format!(
+            "window.__asterSearch ? window.__asterSearch.find({query_json}) : JSON.stringify({{count: 0, index: -1}});"
+        );
+
+        let weak_doc = Rc::downgrade(self);
+        self.web_view.evaluate_javascript(
+            &script,
+            None,
+            None,
+            Option::<&gio::Cancellable>::None,
+            move |result| {
+                let Some(doc) = weak_doc.upgrade() else {
+                    return;
+                };
+                if doc.preview_search_generation.get() != generation
+                    || !doc.is_preview_active.get()
+                {
+                    return;
+                }
+                if let Ok(value) = result {
+                    doc.apply_preview_search_result(&value.to_str());
+                }
+            },
+        );
+    }
+
+    /// Переходит к следующему/предыдущему совпадению в предпросмотре.
+    fn navigate_preview_search(self: &Rc<Self>, forward: bool) {
+        let generation = self.preview_search_generation.get() + 1;
+        self.preview_search_generation.set(generation);
+
+        let script = format!(
+            "window.__asterSearch ? window.__asterSearch.next({}) : JSON.stringify({{count: 0, index: -1}});",
+            if forward { "true" } else { "false" }
+        );
+
+        let weak_doc = Rc::downgrade(self);
+        self.web_view.evaluate_javascript(
+            &script,
+            None,
+            None,
+            Option::<&gio::Cancellable>::None,
+            move |result| {
+                let Some(doc) = weak_doc.upgrade() else {
+                    return;
+                };
+                if doc.preview_search_generation.get() != generation
+                    || !doc.is_preview_active.get()
+                {
+                    return;
+                }
+                if let Ok(value) = result {
+                    doc.apply_preview_search_result(&value.to_str());
+                }
+            },
+        );
+    }
+
+    /// Применяет JSON-ответ JavaScript-поиска к счетчику и статусу.
+    fn apply_preview_search_result(&self, raw: &str) {
+        let Some((count, index)) = parse_preview_search_result(raw) else {
+            return;
+        };
+
+        self.preview_search_count.set(count);
+        self.preview_search_index.set(index);
         self.update_search_status();
     }
 
     /// Обновляет счетчик и доступность кнопок навигации.
     fn update_search_status(&self) {
         let lang = Language::from_code(&self.settings.borrow().language);
-        let total = self.search_matches.borrow().len();
+        let in_preview = self.is_preview_active.get();
+        let (total, current) = if in_preview {
+            (
+                self.preview_search_count.get(),
+                self.preview_search_index.get(),
+            )
+        } else {
+            (self.search_matches.borrow().len(), self.search_index.get())
+        };
 
         self.search_prev_btn.set_sensitive(total > 0);
         self.search_next_btn.set_sensitive(total > 0);
-        self.replace_btn.set_sensitive(total > 0);
-        self.replace_all_btn.set_sensitive(total > 0);
+        self.replace_btn.set_sensitive(!in_preview && total > 0);
+        self.replace_all_btn.set_sensitive(!in_preview && total > 0);
 
         if !self.search_bar.is_search_mode() || self.search_entry.text().is_empty() {
             self.search_status.set_text("");
@@ -1290,7 +1606,7 @@ impl Document {
             self.search_status.set_text(lang.search_no_results());
         } else {
             self.search_status
-                .set_text(&lang.search_counter(self.search_index.get() + 1, total));
+                .set_text(&lang.search_counter(current + 1, total));
         }
     }
 }
@@ -1362,6 +1678,20 @@ fn is_current_document_base(base: &str, current_file: &Path) -> bool {
     }
 
     false
+}
+
+/// Разбирает JSON-ответ JavaScript-поиска.
+///
+/// Возвращает `(количество, индекс)`. При нулевом количестве индекс всегда 0.
+fn parse_preview_search_result(raw: &str) -> Option<(usize, usize)> {
+    let result = serde_json::from_str::<serde_json::Value>(raw).ok()?;
+    let count = result.get("count")?.as_u64()? as usize;
+    let index = result
+        .get("index")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(-1);
+
+    Some((count, if count == 0 { 0 } else { index.max(0) as usize }))
 }
 
 /// Индекс ближайшего совпадения, начинающегося не раньше `after`.
@@ -2036,6 +2366,88 @@ mod tests {
             weak_text_view.upgrade().is_none(),
             "TextView is kept alive by editor signal handlers"
         );
+    }
+
+    #[gtk4::test]
+    fn test_preview_search_script_finds_visible_text() {
+        use std::time::{Duration, Instant};
+
+        let manager = UserContentManager::new();
+        manager.add_script(&UserScript::new(
+            SCROLL_TRACKER_SCRIPT,
+            UserContentInjectedFrames::TopFrame,
+            UserScriptInjectionTime::End,
+            &[],
+            &[],
+        ));
+
+        let web_view = webkit6::WebView::builder()
+            .user_content_manager(&manager)
+            .build();
+
+        let loaded = Rc::new(Cell::new(false));
+        let loaded_for_signal = loaded.clone();
+        web_view.connect_load_changed(move |_, event| {
+            if event == webkit6::LoadEvent::Finished {
+                loaded_for_signal.set(true);
+            }
+        });
+
+        web_view.load_html(
+            "<!DOCTYPE html><html><body>             <p>Hello world</p><p>hello again</p>             <script>Hello hidden</script>             </body></html>",
+            None,
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !loaded.get() && Instant::now() < deadline {
+            while glib::MainContext::default().iteration(false) {}
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(loaded.get(), "preview did not load");
+
+        let evaluate = |script: &str| -> String {
+            let result: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+            let result_for_callback = result.clone();
+            web_view.evaluate_javascript(
+                script,
+                None,
+                None,
+                Option::<&gio::Cancellable>::None,
+                move |value| {
+                    if let Ok(value) = value {
+                        *result_for_callback.borrow_mut() = Some(value.to_str().to_string());
+                    }
+                },
+            );
+
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while result.borrow().is_none() && Instant::now() < deadline {
+                while glib::MainContext::default().iteration(false) {}
+                std::thread::sleep(Duration::from_millis(10));
+            }
+
+            let output = result.borrow().clone().expect("JS result");
+            output
+        };
+
+        let first = evaluate("window.__asterSearch.find('hello')");
+        assert_eq!(parse_preview_search_result(&first), Some((2, 0)));
+
+        let second = evaluate("window.__asterSearch.next(true)");
+        assert_eq!(parse_preview_search_result(&second), Some((2, 1)));
+
+        let mark_count = evaluate(
+            "document.querySelectorAll('mark.aster-search-match, mark.aster-search-current').length",
+        );
+        assert_eq!(mark_count, "2");
+    }
+
+    #[test]
+    fn test_parse_preview_search_result() {
+        assert_eq!(parse_preview_search_result(r#"{"count":3,"index":1}"#), Some((3, 1)));
+        assert_eq!(parse_preview_search_result(r#"{"count":0,"index":-1}"#), Some((0, 0)));
+        assert_eq!(parse_preview_search_result(r#"{"count":2,"index":-1}"#), Some((2, 0)));
+        assert_eq!(parse_preview_search_result("not json"), None);
     }
 
     #[test]
