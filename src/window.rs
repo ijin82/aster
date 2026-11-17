@@ -32,14 +32,9 @@ pub fn build_window(
 ) -> adw::ApplicationWindow {
     let settings = Rc::new(RefCell::new(AppSettings::load()));
 
-    // Отключаем системный звук на границах текста (см. обработчик клавиш в document.rs).
-    if let Some(gtk_settings) = gtk4::Settings::default() {
-        gtk_settings.set_gtk_error_bell(false);
-    }
-    if let Some(display) = gtk4::gdk::Display::default() {
-        let gtk_settings = gtk4::Settings::for_display(&display);
-        gtk_settings.set_gtk_error_bell(false);
-    }
+    // Aster — редактор Markdown, поэтому любые системные звуки интерфейса
+    // (error bell, звуки событий и звуковая обратная связь ввода) отключены.
+    disable_sound_feedback();
 
     apply_color_scheme(&settings.borrow().theme);
 
@@ -959,6 +954,28 @@ fn rebuild_tab_menu(menu: &gio::Menu, lang: Language) {
     menu.append(Some(lang.menu_close_tab()), Some("win.close_tab"));
 }
 
+/// Полностью отключает звуковую обратную связь GTK.
+///
+/// Одного `gtk-error-bell` недостаточно: GTK4 отдельно проигрывает
+/// «event sounds» (например, звуки открытия/закрытия окон) и
+/// «input feedback sounds» для клавиатурных действий. В Markdown-редакторе
+/// все три категории лишние, поэтому выключаем их и для стандартных
+/// настроек, и для настроек текущего GDK-дисплея.
+fn disable_sound_feedback() {
+    fn silence(settings: &gtk4::Settings) {
+        settings.set_gtk_error_bell(false);
+        settings.set_gtk_enable_event_sounds(false);
+        settings.set_gtk_enable_input_feedback_sounds(false);
+    }
+
+    if let Some(settings) = gtk4::Settings::default() {
+        silence(&settings);
+    }
+    if let Some(display) = gtk4::gdk::Display::default() {
+        silence(&gtk4::Settings::for_display(&display));
+    }
+}
+
 /// Применяет выбранную цветовую схему к Adwaita StyleManager.
 fn apply_color_scheme(theme: &str) {
     let style_mgr = adw::StyleManager::default();
@@ -1502,4 +1519,21 @@ fn show_about_dialog(parent: &adw::ApplicationWindow, lang: Language) {
         .license_type(gtk4::License::MitX11)
         .build();
     about.present();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[gtk4::test]
+    fn test_all_gtk_sound_feedback_is_disabled() {
+        disable_sound_feedback();
+        let Some(settings) = gtk4::Settings::default() else {
+            return;
+        };
+
+        assert!(!settings.is_gtk_error_bell());
+        assert!(!settings.is_gtk_enable_event_sounds());
+        assert!(!settings.is_gtk_enable_input_feedback_sounds());
+    }
 }

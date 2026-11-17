@@ -207,6 +207,16 @@ impl Document {
         if let Some(web_settings) = WebViewExt::settings(&web_view) {
             web_settings.set_allow_file_access_from_file_urls(true);
             web_settings.set_allow_universal_access_from_file_urls(true);
+
+            // Markdown-предпросмотр не должен издавать звуки. Отключаем
+            // воспроизведение медиа, Web Audio, захват медиапотоков и EME:
+            // этого достаточно, чтобы ни встроенный <audio>/<video>, ни
+            // скрипт из HTML не могли включить звук.
+            web_settings.set_enable_media(false);
+            web_settings.set_enable_webaudio(false);
+            web_settings.set_enable_media_stream(false);
+            web_settings.set_enable_mediasource(false);
+            web_settings.set_enable_encrypted_media(false);
         }
 
         let preview_scroll = gtk4::ScrolledWindow::builder()
@@ -1078,12 +1088,8 @@ pub fn unindent_selection_or_cursor(buffer: &gtk4::TextBuffer) {
 mod tests {
     use super::*;
 
-    #[test]
+    #[gtk4::test]
     fn test_indent_and_unindent() {
-        if gtk4::init().is_err() {
-            return;
-        }
-
         let buffer = gtk4::TextBuffer::new(None);
         buffer.set_text("line 1\nline 2\nline 3\n");
 
@@ -1100,12 +1106,8 @@ mod tests {
         assert_eq!(text_after_unindent.as_str(), "line 1\nline 2\nline 3\n");
     }
 
-    #[test]
+    #[gtk4::test]
     fn test_cursor_position_restore() {
-        if gtk4::init().is_err() {
-            return;
-        }
-
         let buffer = gtk4::TextBuffer::new(None);
         buffer.set_text("First line\nSecond line\nThird line\n");
 
