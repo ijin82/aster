@@ -20,6 +20,7 @@ use super::tabs::{active_document, select_tab_wrapped};
 /// Все зависимости, необходимые для регистрации действий.
 pub(crate) struct ActionContext {
     pub window: adw::ApplicationWindow,
+    pub header_bar: adw::HeaderBar,
     pub tab_view: adw::TabView,
     pub docs: Rc<RefCell<Vec<Rc<Document>>>>,
     pub settings: Rc<RefCell<AppSettings>>,
@@ -30,12 +31,14 @@ pub(crate) struct ActionContext {
     pub show_open_dialog: Rc<dyn Fn()>,
     pub save_active_document: Rc<dyn Fn(bool)>,
     pub update_ui_language: Rc<dyn Fn(Language)>,
+    pub closed_tabs: Rc<RefCell<Vec<PathBuf>>>,
 }
 
 /// Создает группу действий `win.*`.
 pub(crate) fn install_actions(ctx: ActionContext) -> gio::SimpleActionGroup {
     let ActionContext {
         window,
+        header_bar,
         tab_view,
         docs,
         settings,
@@ -46,6 +49,7 @@ pub(crate) fn install_actions(ctx: ActionContext) -> gio::SimpleActionGroup {
         show_open_dialog,
         save_active_document,
         update_ui_language,
+        closed_tabs,
     } = ctx;
 
     // --- Действия окна ---
@@ -84,6 +88,36 @@ pub(crate) fn install_actions(ctx: ActionContext) -> gio::SimpleActionGroup {
         });
     }
     actions.add_action(&new_tab_action);
+
+    let reopen_tab_action = gio::SimpleAction::new("reopen_tab", None);
+    {
+        let closed_tabs = closed_tabs.clone();
+        let add_document = add_document.clone();
+        let persist_session = persist_session.clone();
+        let refresh_active_ui = refresh_active_ui.clone();
+        reopen_tab_action.connect_activate(move |_, _| {
+            // Пропускаем файлы, которые успели удалить с диска, и
+            // восстанавливаем ближайшую существующую вкладку.
+            while let Some(path) = closed_tabs.borrow_mut().pop() {
+                if path.is_file() {
+                    add_document(Some(path), false);
+                    persist_session();
+                    refresh_active_ui();
+                    break;
+                }
+            }
+        });
+    }
+    actions.add_action(&reopen_tab_action);
+
+    let meditation_action = gio::SimpleAction::new("toggle_meditation", None);
+    {
+        let header_bar = header_bar.clone();
+        meditation_action.connect_activate(move |_, _| {
+            header_bar.set_visible(!header_bar.is_visible());
+        });
+    }
+    actions.add_action(&meditation_action);
 
     let close_tab_action = gio::SimpleAction::new("close_tab", None);
     {

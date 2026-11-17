@@ -153,6 +153,20 @@ impl Language {
         }
     }
 
+    pub fn menu_reopen_tab(&self) -> &'static str {
+        match self {
+            Language::Russian => "Восстановить закрытую вкладку",
+            Language::English => "Reopen Closed Tab",
+        }
+    }
+
+    pub fn menu_meditation(&self) -> &'static str {
+        match self {
+            Language::Russian => "Режим медитации",
+            Language::English => "Meditation Mode",
+        }
+    }
+
     pub fn menu_close_tab(&self) -> &'static str {
         match self {
             Language::Russian => "Закрыть вкладку",

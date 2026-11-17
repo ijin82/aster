@@ -177,6 +177,9 @@ pub fn build_window(
     // Каталог последнего открытого/активного файла. Нужен, чтобы диалог
     // открытия начинался в той же папке, даже если текущая вкладка безымянная.
     let last_open_directory: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(None));
+    // Стек закрытых файлов текущей сессии для Ctrl+Shift+T.
+    let closed_tabs: Rc<RefCell<Vec<PathBuf>>> = Rc::new(RefCell::new(Vec::new()));
+    const MAX_CLOSED_TABS: usize = 50;
     let suppress_mode_sync = Rc::new(Cell::new(false));
     let suppress_search_sync = Rc::new(Cell::new(false));
     let is_force_closing = Rc::new(Cell::new(false));
@@ -496,6 +499,7 @@ pub fn build_window(
 
     let actions = install_actions(ActionContext {
         window: window.clone(),
+        header_bar: header_bar.clone(),
         tab_view: tab_view.clone(),
         docs: docs.clone(),
         settings: settings.clone(),
@@ -506,6 +510,7 @@ pub fn build_window(
         show_open_dialog: show_open_dialog.clone(),
         save_active_document: save_active_document.clone(),
         update_ui_language: update_ui_language.clone(),
+        closed_tabs: closed_tabs.clone(),
     });
     window.insert_action_group("win", Some(&actions));
 
@@ -756,6 +761,7 @@ pub fn build_window(
         let persist_session = persist_session.clone();
         let refresh_active_ui = refresh_active_ui.clone();
         let is_closing = is_closing.clone();
+        let closed_tabs = closed_tabs.clone();
 
         tab_view.connect_page_detached(move |_, page, _| {
             // При закрытии окна вкладки отсоединяются автоматически; сессию
@@ -772,6 +778,13 @@ pub fn build_window(
             };
 
             if let Some(doc) = removed {
+                if let Some(path) = doc.current_file.borrow().clone() {
+                    let mut stack = closed_tabs.borrow_mut();
+                    if stack.len() >= MAX_CLOSED_TABS {
+                        stack.remove(0);
+                    }
+                    stack.push(path);
+                }
                 doc.export_state(&mut settings.borrow_mut());
             }
 
@@ -898,6 +911,8 @@ pub fn build_window(
     app.set_accels_for_action("win.save_as", &["<Control><Shift>s"]);
     app.set_accels_for_action("win.open", &["<Control>o"]);
     app.set_accels_for_action("win.new_tab", &["<Control>t"]);
+    app.set_accels_for_action("win.reopen_tab", &["<Control><Shift>t"]);
+    app.set_accels_for_action("win.toggle_meditation", &["<Control><Shift>h"]);
     app.set_accels_for_action("win.close_tab", &["<Control>w"]);
     app.set_accels_for_action("win.next_tab", &["<Control>Tab"]);
     app.set_accels_for_action(

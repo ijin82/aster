@@ -155,7 +155,11 @@ pub fn render_markdown_to_html(
             color-scheme: {theme_mode};
         }}
 
-        body {{
+        /* body.markdown-body, а не просто body: GitHub CSS задает
+           .markdown-body с margin: 0 и более высокой специфичностью.
+           Из-за этого margin:auto не применялся, и справа оставалась
+           лишняя пустая полоса. */
+        body.markdown-body {{
             box-sizing: border-box;
             width: {body_width_percent}%;
             max-width: {body_width_percent}%;
@@ -165,7 +169,7 @@ pub fn render_markdown_to_html(
         }}
 
         @media (max-width: 767px) {{
-            body {{
+            body.markdown-body {{
                 width: 96%;
                 max-width: 96%;
                 padding: 15px 2%;
@@ -305,6 +309,7 @@ mod tests {
         assert!(!html.contains("<script>"));
         assert!(html.contains("Content-Security-Policy"));
         assert!(html.contains("script-src 'none'"));
+        assert!(html.contains("body.markdown-body"));
         assert!(html.contains("mark.aster-search-match"));
         assert!(html.contains("mark.aster-search-current"));
     }
