@@ -474,6 +474,26 @@ pub fn build_window(
     }
     actions.add_action(&close_tab_action);
 
+    // Традиционное для вкладок переключение по кругу: Ctrl+Tab и Ctrl+Shift+Tab.
+    // Эти действия не связаны с режимом предпросмотра — тот теперь на Ctrl+E.
+    let next_tab_action = gio::SimpleAction::new("next_tab", None);
+    {
+        let tab_view = tab_view.clone();
+        next_tab_action.connect_activate(move |_, _| {
+            tab_view.select_next_page();
+        });
+    }
+    actions.add_action(&next_tab_action);
+
+    let previous_tab_action = gio::SimpleAction::new("previous_tab", None);
+    {
+        let tab_view = tab_view.clone();
+        previous_tab_action.connect_activate(move |_, _| {
+            tab_view.select_previous_page();
+        });
+    }
+    actions.add_action(&previous_tab_action);
+
     let close_window_action = gio::SimpleAction::new("close", None);
     {
         let window = window.clone();
@@ -917,7 +937,12 @@ pub fn build_window(
     app.set_accels_for_action("win.open", &["<Control>o"]);
     app.set_accels_for_action("win.new_tab", &["<Control>t"]);
     app.set_accels_for_action("win.close_tab", &["<Control>w"]);
-    app.set_accels_for_action("win.toggle_preview", &["<Control>Tab", "<Control>ISO_Left_Tab"]);
+    app.set_accels_for_action("win.next_tab", &["<Control>Tab"]);
+    app.set_accels_for_action(
+        "win.previous_tab",
+        &["<Control><Shift>Tab", "<Control>ISO_Left_Tab"],
+    );
+    app.set_accels_for_action("win.toggle_preview", &["<Control>e"]);
     app.set_accels_for_action("win.find", &["<Control>f"]);
     app.set_accels_for_action("win.close", &["<Control>q", "<Control>F4"]);
 

@@ -60,15 +60,15 @@ impl Language {
 
     pub fn tooltip_edit_mode(&self) -> &'static str {
         match self {
-            Language::Russian => "Редактор (Ctrl+Tab для переключения)",
-            Language::English => "Editor (Ctrl+Tab to switch)",
+            Language::Russian => "Редактор (Ctrl+E для переключения)",
+            Language::English => "Editor (Ctrl+E to switch)",
         }
     }
 
     pub fn tooltip_preview_mode(&self) -> &'static str {
         match self {
-            Language::Russian => "Просмотр Markdown (Ctrl+Tab для переключения)",
-            Language::English => "Markdown Preview (Ctrl+Tab to switch)",
+            Language::Russian => "Просмотр Markdown (Ctrl+E для переключения)",
+            Language::English => "Markdown Preview (Ctrl+E to switch)",
         }
     }
 
