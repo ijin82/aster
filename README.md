@@ -207,12 +207,17 @@ cargo run -- test.md
 Исходный код снабжен детальными комментариями на русском языке:
 
 - [`src/main.rs`](src/main.rs) — инициализация `adw::Application`, D-Bus ID, обработка сигналов `activate` и `open` (открытие файлов через аргументы командной строки или контекстное меню ОС).
-- [`src/window.rs`](src/window.rs) — построение интерфейса и управление вкладками:
-  - Использование `adw::HeaderBar`, `adw::TabView`, `adw::TabBar`, `gtk4::SearchBar`.
+- [`src/window.rs`](src/window.rs) — композиция окна, `adw::HeaderBar`, `adw::TabView`, `adw::TabBar` и регистрация действий:
   - Клонирование хэндлов для захвата в замыкания сигналов GTK (`connect_clicked`, `connect_changed`).
   - Регистрация действий `gio::SimpleAction` и горячих клавиш приложения.
-  - Восстановление и сохранение сессии (`session_files`, `session_active_document`).
-  - Диалог настроек `adw::PreferencesWindow` и динамическое применение CSS через `gtk4::CssProvider`.
+  - Связывание независимых подсистем окна.
+- [`src/window/`](src/window/) — вынесенные части окна:
+  - `style.rs` — темы, CSS редактора, шрифты, отключение звука;
+  - `menus.rs` — главное меню и меню вкладок;
+  - `tabs.rs` — активная вкладка и заворот `Ctrl+Tab`;
+  - `dialogs.rs` — сохранение, unsaved-диалоги и «О программе»;
+  - `preferences.rs` — `adw::PreferencesWindow`;
+  - `session.rs` — сохранение сессии и геометрии окна.
 - [`src/document.rs`](src/document.rs) — одна вкладка документа:
   - Собственные `GtkTextBuffer`, `GtkTextView`, `WebKitWebView` и `adw::ViewStack` для каждого открытого файла.
   - Раздельная память прокрутки редактора (`GtkAdjustment`) и предпросмотра (`window.scrollY` через WebKit message handler).
