@@ -22,7 +22,7 @@
    - Модульная структура:
      - `main.rs` — точка входа, CLI (`--version`, `--help`), обработка `activate`/`open`.
      - `window.rs` — композиция окна, действия и связывание подсистем.
-     - `window/style.rs`, `menus.rs`, `tabs.rs`, `dialogs.rs`, `preferences.rs`, `session.rs` — вынесенные части окна.
+     - `window/style.rs`, `menus.rs`, `tabs.rs`, `dialogs.rs`, `preferences.rs`, `session.rs`, `actions.rs` — вынесенные части окна.
      - `document.rs` — одна вкладка: редактор, предпросмотр, поиск, прокрутка.
      - `renderer.rs` — генерация HTML/CSS для GitHub Markdown.
      - `settings.rs` — модель конфигурации и персистентность (XDG).

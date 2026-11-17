@@ -19,6 +19,7 @@ use crate::document::{self, Document};
 use crate::i18n::Language;
 use crate::settings::AppSettings;
 
+mod actions;
 mod dialogs;
 mod menus;
 mod preferences;
@@ -26,13 +27,11 @@ mod session;
 mod style;
 mod tabs;
 
-use dialogs::{
-    save_document, save_documents_sequentially, show_about_dialog, show_unsaved_changes_dialog,
-};
+use actions::{install_actions, ActionContext};
+use dialogs::{save_document, save_documents_sequentially, show_unsaved_changes_dialog};
 use menus::{rebuild_main_menu, rebuild_tab_menu};
-use preferences::show_preferences_dialog;
 use style::{apply_color_scheme, apply_editor_style_css, disable_sound_feedback};
-use tabs::{active_document, parent_directory, select_tab_wrapped};
+use tabs::{active_document, parent_directory};
 
 /// Создает главное окно приложения.
 ///
@@ -495,178 +494,19 @@ pub fn build_window(
         })
     };
 
-    // --- Действия окна ---
-    let actions = gio::SimpleActionGroup::new();
-
-    let save_action = gio::SimpleAction::new("save", None);
-    {
-        let save_active_document = save_active_document.clone();
-        save_action.connect_activate(move |_, _| save_active_document(false));
-    }
-    actions.add_action(&save_action);
-
-    let save_as_action = gio::SimpleAction::new("save_as", None);
-    {
-        let save_active_document = save_active_document.clone();
-        save_as_action.connect_activate(move |_, _| save_active_document(true));
-    }
-    actions.add_action(&save_as_action);
-
-    let open_action = gio::SimpleAction::new("open", None);
-    {
-        let show_open_dialog = show_open_dialog.clone();
-        open_action.connect_activate(move |_, _| show_open_dialog());
-    }
-    actions.add_action(&open_action);
-
-    let new_tab_action = gio::SimpleAction::new("new_tab", None);
-    {
-        let add_document = add_document.clone();
-        let persist_session = persist_session.clone();
-        let refresh_active_ui = refresh_active_ui.clone();
-        new_tab_action.connect_activate(move |_, _| {
-            add_document(None, false);
-            persist_session();
-            refresh_active_ui();
-        });
-    }
-    actions.add_action(&new_tab_action);
-
-    let close_tab_action = gio::SimpleAction::new("close_tab", None);
-    {
-        let tab_view = tab_view.clone();
-        close_tab_action.connect_activate(move |_, _| {
-            if let Some(page) = tab_view.selected_page() {
-                tab_view.close_page(&page);
-            }
-        });
-    }
-    actions.add_action(&close_tab_action);
-
-    // Традиционное для вкладок переключение по кругу: Ctrl+Tab и Ctrl+Shift+Tab.
-    // Эти действия не связаны с режимом предпросмотра — тот теперь на Ctrl+E.
-    let next_tab_action = gio::SimpleAction::new("next_tab", None);
-    {
-        let tab_view = tab_view.clone();
-        next_tab_action.connect_activate(move |_, _| {
-            select_tab_wrapped(&tab_view, true);
-        });
-    }
-    actions.add_action(&next_tab_action);
-
-    let previous_tab_action = gio::SimpleAction::new("previous_tab", None);
-    {
-        let tab_view = tab_view.clone();
-        previous_tab_action.connect_activate(move |_, _| {
-            select_tab_wrapped(&tab_view, false);
-        });
-    }
-    actions.add_action(&previous_tab_action);
-
-    let close_window_action = gio::SimpleAction::new("close", None);
-    {
-        let window = window.clone();
-        close_window_action.connect_activate(move |_, _| window.close());
-    }
-    actions.add_action(&close_window_action);
-
-    // Открытие файла внешним процессом через D-Bus. Параметр — путь к файлу.
-    let open_document_action = gio::SimpleAction::new("open_document", Some(glib::VariantTy::STRING));
-    {
-        let add_document = add_document.clone();
-        let persist_session = persist_session.clone();
-        let refresh_active_ui = refresh_active_ui.clone();
-        open_document_action.connect_activate(move |_, param| {
-            if let Some(path) = param.and_then(|value| value.get::<String>()) {
-                add_document(Some(PathBuf::from(path)), false);
-                persist_session();
-                refresh_active_ui();
-            }
-        });
-    }
-    actions.add_action(&open_document_action);
-
-    let toggle_preview_action = gio::SimpleAction::new("toggle_preview", None);
-    {
-        let tab_view = tab_view.clone();
-        let docs = docs.clone();
-        let persist_session = persist_session.clone();
-        let refresh_active_ui = refresh_active_ui.clone();
-        toggle_preview_action.connect_activate(move |_, _| {
-            if let Some(doc) = active_document(&tab_view, &docs) {
-                let preview = !doc.is_preview_active.get();
-                doc.set_preview_mode(preview);
-                persist_session();
-                refresh_active_ui();
-            }
-        });
-    }
-    actions.add_action(&toggle_preview_action);
-
-    let find_action = gio::SimpleAction::new("find", None);
-    {
-        let tab_view = tab_view.clone();
-        let docs = docs.clone();
-        let refresh_active_ui = refresh_active_ui.clone();
-        find_action.connect_activate(move |_, _| {
-            if let Some(doc) = active_document(&tab_view, &docs) {
-                let active = !doc.search_bar.is_search_mode();
-                doc.search_bar.set_search_mode(active);
-                if active {
-                    doc.search_entry.grab_focus();
-                }
-                refresh_active_ui();
-            }
-        });
-    }
-    actions.add_action(&find_action);
-
-    let find_replace_action = gio::SimpleAction::new("find_replace", None);
-    {
-        let tab_view = tab_view.clone();
-        let docs = docs.clone();
-        let refresh_active_ui = refresh_active_ui.clone();
-        find_replace_action.connect_activate(move |_, _| {
-            if let Some(doc) = active_document(&tab_view, &docs) {
-                doc.open_replace_mode();
-                refresh_active_ui();
-            }
-        });
-    }
-    actions.add_action(&find_replace_action);
-
-    let preferences_action = gio::SimpleAction::new("preferences", None);
-    {
-        let window = window.clone();
-        let settings = settings.clone();
-        let docs = docs.clone();
-        let editor_css_provider = editor_css_provider.clone();
-        let refresh_active_ui = refresh_active_ui.clone();
-        let update_ui_language = update_ui_language.clone();
-        preferences_action.connect_activate(move |_, _| {
-            show_preferences_dialog(
-                &window,
-                settings.clone(),
-                docs.clone(),
-                editor_css_provider.clone(),
-                refresh_active_ui.clone(),
-                update_ui_language.clone(),
-            );
-        });
-    }
-    actions.add_action(&preferences_action);
-
-    let about_action = gio::SimpleAction::new("about", None);
-    {
-        let window = window.clone();
-        let settings = settings.clone();
-        about_action.connect_activate(move |_, _| {
-            let lang = Language::from_code(&settings.borrow().language);
-            show_about_dialog(&window, lang);
-        });
-    }
-    actions.add_action(&about_action);
-
+    let actions = install_actions(ActionContext {
+        window: window.clone(),
+        tab_view: tab_view.clone(),
+        docs: docs.clone(),
+        settings: settings.clone(),
+        editor_css_provider: editor_css_provider.clone(),
+        add_document: add_document.clone(),
+        persist_session: persist_session.clone(),
+        refresh_active_ui: refresh_active_ui.clone(),
+        show_open_dialog: show_open_dialog.clone(),
+        save_active_document: save_active_document.clone(),
+        update_ui_language: update_ui_language.clone(),
+    });
     window.insert_action_group("win", Some(&actions));
 
     // --- Обработчики кнопок заголовка ---

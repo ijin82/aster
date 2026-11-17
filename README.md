@@ -218,7 +218,8 @@ cargo run -- test.md
   - `tabs.rs` — активная вкладка и заворот `Ctrl+Tab`;
   - `dialogs.rs` — сохранение, unsaved-диалоги и «О программе»;
   - `preferences.rs` — `adw::PreferencesWindow`;
-  - `session.rs` — сохранение сессии и геометрии окна.
+  - `session.rs` — сохранение сессии и геометрии окна;
+  - `actions.rs` — регистрация действий `win.*` и связанных зависимостей.
 - [`src/document.rs`](src/document.rs) — одна вкладка документа:
   - Собственные `GtkTextBuffer`, `GtkTextView`, `WebKitWebView` и `adw::ViewStack` для каждого открытого файла.
   - Раздельная память прокрутки редактора (`GtkAdjustment`) и предпросмотра (`window.scrollY` через WebKit message handler).
