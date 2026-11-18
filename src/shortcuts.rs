@@ -131,7 +131,7 @@ pub fn ctrl_shortcut_action(key: char, shift: bool) -> Option<&'static str> {
             't' => Some("win.reopen_tab"),
             'h' => Some("win.toggle_meditation"),
             'l' => Some("win.toggle_line_numbers"),
-            'p' => Some("win.toggle_whitespace_wrap"),
+            'p' => Some("win.toggle_whitespace"),
             'w' => Some("win.toggle_soft_wrap"),
             '\t' => Some("win.previous_tab"),
             _ => None,
@@ -198,7 +198,7 @@ mod tests {
         assert_eq!(ctrl_shortcut_action('r', false), Some("win.find_replace"));
         assert_eq!(
             ctrl_shortcut_action('p', true),
-            Some("win.toggle_whitespace_wrap")
+            Some("win.toggle_whitespace")
         );
         assert_eq!(
             ctrl_shortcut_action('l', true),

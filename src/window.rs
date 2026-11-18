@@ -1036,7 +1036,7 @@ pub fn build_window(
     app.set_accels_for_action("win.toggle_line_numbers", &["<Control><Shift>l"]);
     app.set_accels_for_action("win.toggle_soft_wrap", &["<Control><Shift>w"]);
     app.set_accels_for_action(
-        "win.toggle_whitespace_wrap",
+        "win.toggle_whitespace",
         &["<Control><Shift>p"],
     );
     app.set_accels_for_action("win.close_tab", &["<Control>w"]);

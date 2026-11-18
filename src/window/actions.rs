@@ -120,23 +120,22 @@ pub(crate) fn install_actions(ctx: ActionContext) -> gio::SimpleActionGroup {
     }
     actions.add_action(&meditation_action);
 
-    // Единый режим отображения: Ctrl+Shift+P включает или выключает
-    // одновременно показ пробелов и мягкий перенос строк. Настройки
-    // сохраняются на диск и сразу применяются ко всем открытым вкладкам.
-    let toggle_whitespace_wrap_action =
-        gio::SimpleAction::new("toggle_whitespace_wrap", None);
+    // Ctrl+Shift+P переключает только показ пробелов и табов. Мягкий
+    // перенос управляется отдельно через Ctrl+Shift+W, чтобы пользователь
+    // мог включать эти режимы независимо друг от друга.
+    let toggle_whitespace_action = gio::SimpleAction::new("toggle_whitespace", None);
     {
         let settings = settings.clone();
         let docs = docs.clone();
-        toggle_whitespace_wrap_action.connect_activate(move |_, _| {
-            settings.borrow_mut().toggle_whitespace_wrap();
+        toggle_whitespace_action.connect_activate(move |_, _| {
+            settings.borrow_mut().toggle_whitespace();
             settings.borrow().save();
             for doc in docs.borrow().iter() {
                 doc.apply_editor_options();
             }
         });
     }
-    actions.add_action(&toggle_whitespace_wrap_action);
+    actions.add_action(&toggle_whitespace_action);
 
     // Ctrl+Shift+W переключает только мягкий перенос строк, не затрагивая
     // показ пробелов. Настройка сохраняется и применяется ко всем вкладкам.

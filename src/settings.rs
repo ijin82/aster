@@ -199,24 +199,21 @@ impl AppSettings {
 
     /// Переключает только мягкий перенос строк.
     ///
-    /// Возвращает новое состояние. В отличие от
-    /// [`AppSettings::toggle_whitespace_wrap`], показ пробелов не меняется.
+    /// Возвращает новое состояние. Показ пробелов не меняется: это
+    /// независимая настройка, которой управляет `Ctrl+Shift+P`.
     pub fn toggle_soft_wrap(&mut self) -> bool {
         self.soft_wrap = !self.soft_wrap;
         self.soft_wrap
     }
 
-    /// Переключает единый режим отображения пробелов и мягкого переноса.
+    /// Переключает только показ пробелов и табов.
     ///
-    /// Возвращает новое состояние режима. Если хотя бы одна из двух
-    /// настроек выключена, режим включается целиком; если обе включены —
-    /// выключаются обе. Так `Ctrl+Shift+P` всегда приводит редактор к
-    /// одному из двух предсказуемых состояний, а не оставляет смешанное.
-    pub fn toggle_whitespace_wrap(&mut self) -> bool {
-        let enabled = !(self.show_whitespace && self.soft_wrap);
-        self.show_whitespace = enabled;
-        self.soft_wrap = enabled;
-        enabled
+    /// Возвращает новое состояние. Мягкий перенос строк не меняется:
+    /// пользователь настраивает его отдельно через `Ctrl+Shift+W` или
+    /// переключатель в окне настроек.
+    pub fn toggle_whitespace(&mut self) -> bool {
+        self.show_whitespace = !self.show_whitespace;
+        self.show_whitespace
     }
 
     /// Сохраняет текущие настройки на диск в формате JSON с отступами.
@@ -330,24 +327,26 @@ mod tests {
     }
 
     #[test]
-    fn test_toggle_whitespace_wrap_is_atomic() {
+    fn test_whitespace_and_wrap_toggle_independently() {
         let mut settings = AppSettings::default();
         assert!(settings.show_whitespace);
         assert!(settings.soft_wrap);
 
-        // Оба включены -> выключаются оба.
-        assert!(!settings.toggle_whitespace_wrap());
+        // Переключение пробелов не трогает мягкий перенос.
+        assert!(!settings.toggle_whitespace());
+        assert!(!settings.show_whitespace);
+        assert!(settings.soft_wrap);
+
+        // Переключение переноса не трогает показ пробелов.
+        assert!(!settings.toggle_soft_wrap());
         assert!(!settings.show_whitespace);
         assert!(!settings.soft_wrap);
 
-        // Оба выключены -> включаются оба.
-        assert!(settings.toggle_whitespace_wrap());
+        assert!(settings.toggle_whitespace());
         assert!(settings.show_whitespace);
-        assert!(settings.soft_wrap);
+        assert!(!settings.soft_wrap);
 
-        // Смешанное состояние тоже приводится к включенному режиму.
-        settings.soft_wrap = false;
-        assert!(settings.toggle_whitespace_wrap());
+        assert!(settings.toggle_soft_wrap());
         assert!(settings.show_whitespace);
         assert!(settings.soft_wrap);
     }
