@@ -1034,6 +1034,7 @@ pub fn build_window(
     app.set_accels_for_action("win.reopen_tab", &["<Control><Shift>t"]);
     app.set_accels_for_action("win.toggle_meditation", &["<Control><Shift>h"]);
     app.set_accels_for_action("win.toggle_line_numbers", &["<Control><Shift>l"]);
+    app.set_accels_for_action("win.toggle_soft_wrap", &["<Control><Shift>w"]);
     app.set_accels_for_action(
         "win.toggle_whitespace_wrap",
         &["<Control><Shift>p"],

@@ -181,6 +181,15 @@ impl AppSettings {
         Self::default()
     }
 
+    /// Переключает только мягкий перенос строк.
+    ///
+    /// Возвращает новое состояние. В отличие от
+    /// [`AppSettings::toggle_whitespace_wrap`], показ пробелов не меняется.
+    pub fn toggle_soft_wrap(&mut self) -> bool {
+        self.soft_wrap = !self.soft_wrap;
+        self.soft_wrap
+    }
+
     /// Переключает единый режим отображения пробелов и мягкого переноса.
     ///
     /// Возвращает новое состояние режима. Если хотя бы одна из двух
@@ -281,6 +290,21 @@ mod tests {
         assert_eq!(restored.indent_width, 2);
         assert!(restored.soft_wrap);
         assert!(restored.show_whitespace);
+    }
+
+    #[test]
+    fn test_toggle_soft_wrap_does_not_change_whitespace() {
+        let mut settings = AppSettings::default();
+        assert!(settings.soft_wrap);
+        assert!(settings.show_whitespace);
+
+        assert!(!settings.toggle_soft_wrap());
+        assert!(!settings.soft_wrap);
+        assert!(settings.show_whitespace);
+
+        assert!(settings.toggle_soft_wrap());
+        assert!(settings.soft_wrap);
+        assert!(settings.show_whitespace);
     }
 
     #[test]

@@ -138,6 +138,22 @@ pub(crate) fn install_actions(ctx: ActionContext) -> gio::SimpleActionGroup {
     }
     actions.add_action(&toggle_whitespace_wrap_action);
 
+    // Ctrl+Shift+W переключает только мягкий перенос строк, не затрагивая
+    // показ пробелов. Настройка сохраняется и применяется ко всем вкладкам.
+    let toggle_soft_wrap_action = gio::SimpleAction::new("toggle_soft_wrap", None);
+    {
+        let settings = settings.clone();
+        let docs = docs.clone();
+        toggle_soft_wrap_action.connect_activate(move |_, _| {
+            settings.borrow_mut().toggle_soft_wrap();
+            settings.borrow().save();
+            for doc in docs.borrow().iter() {
+                doc.apply_editor_options();
+            }
+        });
+    }
+    actions.add_action(&toggle_soft_wrap_action);
+
     // Ctrl+Shift+L переключает показ номеров строк. Настройка сохраняется
     // на диск и применяется ко всем открытым вкладкам, включая скрытые:
     // при переключении на такую вкладку gutter уже будет в нужном состоянии.

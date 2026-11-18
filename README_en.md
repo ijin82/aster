@@ -26,6 +26,7 @@ The main goal of the project is to serve as a clear, practical guide to building
   - **Duplicate line `Alt+D`**: a copy of the line under the cursor is inserted below, and the cursor moves to the copy in the same column.
   - **Line-by-line scrolling (`Ctrl+Shift+↑` / `Ctrl+Shift+↓`)**: scrolls the editor one visible line up or down without moving the cursor or changing the selection. With soft wrap enabled, the height of a single visual row is used.
   - **Unified display mode (`Ctrl+Shift+P`)**: enables or disables whitespace display and soft wrap together. If either mode is off, the shortcut turns both on; if both are on, it turns both off. The setting is persisted and applied to every tab.
+  - **Soft wrap toggle (`Ctrl+Shift+W`)**: enables or disables soft line wrapping only, without changing whitespace display. The setting is persisted and applied to every tab.
   - **Line number toggle (`Ctrl+Shift+L`)**: shows or hides the line number column in every tab. The setting is persisted across application restarts.
   - **Meditation mode `Ctrl+Shift+H`**: hides the HeaderBar with menus and buttons, leaving only the text. If a single tab is open, the editor fills the entire window; pressing the shortcut again restores the panel.
 - **GitHub-style Markdown preview**:
@@ -65,7 +66,7 @@ The main goal of the project is to serve as a clear, practical guide to building
   - Preview side padding adjustment (padding in %, 5% on each side by default).
   - **Tab width** (1–8, default 2) — how many monospace cells an existing `\t` character occupies when displayed.
   - **Indent size** (1–8, default 2) — how many spaces `Tab` and `Shift+Tab` insert. Only spaces are inserted, never tab characters.
-  - **Soft wrap** (enabled by default) — long lines wrap to the window width.
+  - **Soft wrap** (enabled by default) — long lines wrap to the window width. Toggled separately with `Ctrl+Shift+W` or together with whitespace display via `Ctrl+Shift+P`.
   - **Show spaces and tabs** (enabled by default) — spaces are marked with dots, tabs with horizontal lines. Toggled together with soft wrap by `Ctrl+Shift+P`.
   - **Selection from all monospace fonts on the system** (dynamically discovered via Pango Context: `Cascadia Code`, `Fira Code`, `JetBrains Mono`, `Adwaita Mono`, `DejaVu Sans Mono`, `Liberation Mono`, etc.).
   - Editor font size (applied on the fly to existing and newly entered text via the CSS rule `textview.editor-view text`).
