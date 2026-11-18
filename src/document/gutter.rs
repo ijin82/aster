@@ -93,8 +93,10 @@ pub(super) fn setup_line_numbers_gutter(
 
         cr.set_source_rgb(num_r, num_g, num_b);
 
-        // Метрики "0" нужны, чтобы выровнять номер по центру строки,
-        // как обычный текст редактора.
+        // Метрики "0" нужны, чтобы выровнять номер по центру первого
+        // визуального ряда. Высота всей логической строки здесь не
+        // подходит: из-за мягкого переноса номер уезжал бы в середину
+        // многострочного абзаца.
         let (glyph_height, glyph_y_bearing) = cr
             .text_extents("0")
             .map(|extents| (extents.height(), extents.y_bearing()))
@@ -108,11 +110,14 @@ pub(super) fn setup_line_numbers_gutter(
             let line_num = iter.line() + 1;
             let num_str = format!("{line_num}");
 
+            // Высота одного визуального ряда, а не всей логической строки:
+            // номер должен стоять у первой строки перенесенного текста.
+            let visual_line_height = text_view.iter_location(&iter).height().max(1) as f64;
+
             if let Ok(extents) = cr.text_extents(&num_str) {
                 let x = (width as f64) - 8.0 - extents.width() - extents.x_bearing();
-                let line_height = (h_buf as f64).max(font_size);
                 let y = (win_y as f64)
-                    + (line_height - glyph_height) * 0.5
+                    + (visual_line_height - glyph_height) * 0.5
                     - glyph_y_bearing;
                 cr.move_to(x, y);
                 let _ = cr.show_text(&num_str);

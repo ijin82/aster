@@ -1303,6 +1303,9 @@ impl Document {
         });
         self.show_whitespace.set(show_whitespace);
         self.whitespace_area.queue_draw();
+        // Смена переноса меняет высоту логических строк, поэтому номера
+        // нужно перерисовать даже без прокрутки.
+        self.gutter.queue_draw();
         self.update_tab_stops(tab_width);
 
         // При включении переноса возвращаем горизонтальную прокрутку в 0,
