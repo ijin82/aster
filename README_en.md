@@ -6,8 +6,6 @@
 
 **Aster** is an educational, lightweight application built with **Rust**, **GTK4**, **Libadwaita**, and **WebKitGTK 6.0** for viewing and editing Markdown documents in the GNOME style.
 
-[Another file](AGENTS.md)
-
 The main goal of the project is to serve as a clear, practical guide to building Linux GUI applications in Rust while following the GNOME Human Interface Guidelines (HIG).
 
 ---
