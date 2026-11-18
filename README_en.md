@@ -71,7 +71,9 @@ The main goal of the project is to serve as a clear, practical guide to building
   - **Selection from all monospace fonts on the system** (dynamically discovered via Pango Context: `Cascadia Code`, `Fira Code`, `JetBrains Mono`, `Adwaita Mono`, `DejaVu Sans Mono`, `Liberation Mono`, etc.).
   - Editor font size (applied on the fly to existing and newly entered text via the CSS rule `textview.editor-view text`).
   - Preview font size.
-  - **Line number visibility toggle** in edit mode (`adw::SwitchRow`) and with the `Ctrl+Shift+L` shortcut. Numbers are aligned to the first visual row, so on a long soft-wrapped line the number stays at its beginning instead of the middle.
+  - **Line number visibility toggle** in edit mode (`adw::SwitchRow`) and with the `Ctrl+Shift+L` shortcut. Numbers are aligned to the first visual row, so on a long soft-wrapped line the number stays at its beginning instead of the middle. The switch is located in the editor settings group.
+  - **Shortcuts next to the switches**: combinations are shown as a single compact badge (`Ctrl + Shift + W`) instead of a row of separate keycaps.
+  - **Preferences window size memory**: the window opens 15% wider than before, remains freely resizable, and remembers the width and height chosen by the user.
   - Settings are stored as JSON following the XDG standard (`~/.config/aster/settings.json`).
 
 ---

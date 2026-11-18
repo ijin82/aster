@@ -54,6 +54,15 @@ pub struct AppSettings {
     /// Сохраненная высота окна.
     #[serde(default = "default_window_height")]
     pub window_height: i32,
+    /// Ширина окна настроек, выбранная пользователем.
+    #[serde(default = "default_preferences_width")]
+    pub preferences_width: i32,
+    /// Высота окна настроек, выбранная пользователем.
+    ///
+    /// `0` означает, что пользователь еще не менял размер по высоте:
+    /// в этом случае окно получает естественную высоту AdwPreferencesWindow.
+    #[serde(default)]
+    pub preferences_height: i32,
     /// Язык интерфейса приложения ("ru" или "en").
     #[serde(default = "default_language")]
     pub language: String,
@@ -131,6 +140,11 @@ fn default_window_height() -> i32 {
     720
 }
 
+/// Стандартная ширина окна настроек: 480 px + 15%.
+fn default_preferences_width() -> i32 {
+    552
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -142,6 +156,8 @@ impl Default for AppSettings {
             window_maximized: false,
             window_width: default_window_width(),
             window_height: default_window_height(),
+            preferences_width: default_preferences_width(),
+            preferences_height: 0,
             language: default_language(),
             show_line_numbers: default_show_line_numbers(),
             tab_width: default_tab_width(),
@@ -245,6 +261,8 @@ mod tests {
     fn test_settings_roundtrip_with_session_and_view_states() {
         let mut settings = AppSettings::default();
         settings.theme = "dracula".to_string();
+        settings.preferences_width = 700;
+        settings.preferences_height = 820;
         settings.session_files = vec!["/tmp/a.md".to_string(), "/tmp/b.md".to_string()];
         settings.session_active_document = 1;
         settings.file_view_states.insert(
@@ -261,6 +279,8 @@ mod tests {
 
         assert_eq!(restored.session_files, settings.session_files);
         assert_eq!(restored.session_active_document, 1);
+        assert_eq!(restored.preferences_width, 700);
+        assert_eq!(restored.preferences_height, 820);
         assert_eq!(
             restored.file_view_states.get("/tmp/a.md"),
             Some(&FileViewState {
@@ -290,6 +310,8 @@ mod tests {
         assert_eq!(restored.indent_width, 2);
         assert!(restored.soft_wrap);
         assert!(restored.show_whitespace);
+        assert_eq!(restored.preferences_width, 552);
+        assert_eq!(restored.preferences_height, 0);
     }
 
     #[test]

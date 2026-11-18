@@ -10,14 +10,63 @@ use crate::settings::AppSettings;
 
 use super::style::{apply_color_scheme, apply_editor_style_css, get_system_monospace_fonts};
 
+/// Преобразует GTK-акселератор в одну человекочитаемую строку.
+///
+/// Пример: `<Control><Shift>w` -> `Ctrl + Shift + W`.
+/// В отличие от `GtkShortcutLabel`, который рисует каждую клавишу отдельным
+/// блоком, здесь получается единая строка для одной компактной плашки.
+fn shortcut_display_text(accelerator: &str) -> String {
+    let mut parts = Vec::new();
+    let mut rest = accelerator;
+
+    while let Some(start) = rest.find('<') {
+        // Текст перед модификатором (обычно пустой) сохраняем как есть.
+        if start > 0 {
+            parts.push(rest[..start].to_string());
+        }
+
+        let Some(relative_end) = rest[start..].find('>') else {
+            break;
+        };
+        let end = start + relative_end;
+        let token = &rest[start + 1..end];
+        let label = match token {
+            "Control" | "Primary" => "Ctrl",
+            "Shift" => "Shift",
+            "Alt" => "Alt",
+            "Super" | "Meta" => "Super",
+            other => other,
+        };
+        parts.push(label.to_string());
+        rest = &rest[end + 1..];
+    }
+
+    if !rest.is_empty() {
+        parts.push(rest.to_string());
+    }
+
+    // Одиночную латинскую клавишу показываем заглавной: w -> W.
+    // Названия вроде Tab или ISO_Left_Tab не трогаем.
+    if let Some(last) = parts.last_mut() {
+        let mut chars = last.chars();
+        if let (Some(ch), None) = (chars.next(), chars.next()) {
+            if ch.is_ascii_alphabetic() {
+                *last = ch.to_ascii_uppercase().to_string();
+            }
+        }
+    }
+
+    parts.join(" + ")
+}
+
 /// Добавляет к строке настроек компактную подсказку горячей клавиши.
 ///
-/// `GtkShortcutLabel` сам рисует клавиши в стиле текущей темы и учитывает
-/// модификаторы, поэтому не нужно вручную собирать строку "Ctrl+Shift+W".
-/// Виджет добавляется как suffix: в `AdwSwitchRow` он оказывается рядом с
-/// переключателем и не мешает основной подписи и описанию.
+/// Вся комбинация рисуется одной плашкой `Ctrl + Shift + W`, а не набором
+/// отдельных клавиш. CSS-класс `shortcut-badge` задается в `style.rs`, а
+/// suffix у `AdwSwitchRow` располагает плашку рядом с переключателем.
 fn add_shortcut_hint(row: &impl IsA<adw::ActionRow>, accelerator: &str) {
-    let shortcut = gtk4::ShortcutLabel::new(accelerator);
+    let shortcut = gtk4::Label::new(Some(&shortcut_display_text(accelerator)));
+    shortcut.add_css_class("shortcut-badge");
     shortcut.set_valign(gtk4::Align::Center);
     row.add_suffix(&shortcut);
 }
@@ -33,12 +82,44 @@ pub(crate) fn show_preferences_dialog(
 ) {
     let current_lang = Language::from_code(&settings.borrow().language);
 
+    let (preferences_width, preferences_height) = {
+        let settings = settings.borrow();
+        (
+            settings.preferences_width.max(320),
+            settings.preferences_height.max(0),
+        )
+    };
+
     let window = adw::PreferencesWindow::builder()
         .transient_for(parent)
         .modal(true)
         .title(current_lang.pref_window_title())
-        .default_width(480)
+        .default_width(preferences_width)
         .build();
+
+    // Пользователь должен иметь возможность изменить размер окна.
+    window.set_resizable(true);
+    if preferences_height > 0 {
+        window.set_default_height(preferences_height);
+    }
+
+    // Сохраняем фактический размер при закрытии. `default_width/height`
+    // хранят только стартовые значения, поэтому для пользовательского
+    // размера используем текущие `width()` и `height()`.
+    {
+        let settings = settings.clone();
+        window.connect_close_request(move |window| {
+            let width = window.width();
+            let height = window.height();
+            if width > 0 && height > 0 {
+                let mut state = settings.borrow_mut();
+                state.preferences_width = width;
+                state.preferences_height = height;
+                state.save();
+            }
+            gtk4::glib::Propagation::Proceed
+        });
+    }
 
     let page = adw::PreferencesPage::new();
 
@@ -276,6 +357,30 @@ pub(crate) fn show_preferences_dialog(
         });
     }
     editor_group.add(&show_whitespace_row);
+
+    // Номера строк относятся к режиму редактора, поэтому живут в той же
+    // группе, что и перенос/пробелы, а не в группе шрифтов.
+    let line_numbers_row = adw::SwitchRow::builder()
+        .title(current_lang.pref_line_numbers_title())
+        .subtitle(current_lang.pref_line_numbers_subtitle())
+        .active(settings.borrow().show_line_numbers)
+        .build();
+    add_shortcut_hint(&line_numbers_row, "<Control><Shift>l");
+
+    {
+        let settings = settings.clone();
+        let docs = docs.clone();
+        line_numbers_row.connect_active_notify(move |row| {
+            let active = row.is_active();
+            settings.borrow_mut().show_line_numbers = active;
+            settings.borrow().save();
+            for doc in docs.borrow().iter() {
+                doc.set_line_numbers_visible(active);
+            }
+        });
+    }
+    editor_group.add(&line_numbers_row);
+
     page.add(&editor_group);
 
     // --- Шрифты ---
@@ -399,28 +504,29 @@ pub(crate) fn show_preferences_dialog(
     }
     fonts_group.add(&preview_spin);
 
-    let line_numbers_row = adw::SwitchRow::builder()
-        .title(current_lang.pref_line_numbers_title())
-        .subtitle(current_lang.pref_line_numbers_subtitle())
-        .active(settings.borrow().show_line_numbers)
-        .build();
-    add_shortcut_hint(&line_numbers_row, "<Control><Shift>l");
-
-    {
-        let settings = settings.clone();
-        let docs = docs.clone();
-        line_numbers_row.connect_active_notify(move |row| {
-            let active = row.is_active();
-            settings.borrow_mut().show_line_numbers = active;
-            settings.borrow().save();
-            for doc in docs.borrow().iter() {
-                doc.set_line_numbers_visible(active);
-            }
-        });
-    }
-    fonts_group.add(&line_numbers_row);
-
     page.add(&fonts_group);
     window.add(&page);
     window.present();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shortcut_display_text;
+
+    #[test]
+    fn test_shortcut_display_text() {
+        assert_eq!(
+            shortcut_display_text("<Control><Shift>w"),
+            "Ctrl + Shift + W"
+        );
+        assert_eq!(
+            shortcut_display_text("<Control><Shift>l"),
+            "Ctrl + Shift + L"
+        );
+        assert_eq!(
+            shortcut_display_text("<Control><Shift>Tab"),
+            "Ctrl + Shift + Tab"
+        );
+        assert_eq!(shortcut_display_text("F5"), "F5");
+    }
 }

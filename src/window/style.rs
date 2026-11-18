@@ -79,6 +79,12 @@ pub(crate) fn apply_editor_style_css(
             caret-color: {cursor_color};
             font-family: \"{family}\", monospace;
             font-size: {font_size}pt;
+        }}
+        .shortcut-badge {{
+            background-color: rgba(127, 127, 127, 0.14);
+            border: 1px solid rgba(127, 127, 127, 0.28);
+            border-radius: 6px;
+            padding: 1px 8px;
         }}"
     );
     provider.load_from_data(&css);
