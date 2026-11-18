@@ -76,9 +76,38 @@ The main goal of the project is to serve as a clear, practical guide to building
 
 ## 🛠️ Development environment setup
 
-### 1. System dependencies
+### 1. Installing Rust
 
-Compilation requires the Rust compiler (version 1.75+) and the development headers for GTK4, Libadwaita, and WebKitGTK 6.0.
+Building requires the Rust compiler version 1.75 or newer. The recommended installation method is the official `rustup` installer:
+
+```bash
+curl https://sh.rustup.rs -sSf | sh
+```
+
+The script will offer installation options; the standard profile is sufficient. After it finishes, load the Cargo environment into the current session:
+
+```bash
+source "$HOME/.cargo/env"
+```
+
+Verify the installation:
+
+```bash
+rustc --version
+cargo --version
+```
+
+If Rust is already installed via `rustup`, update the toolchain with:
+
+```bash
+rustup update
+```
+
+> Some distributions provide `rustc` and `cargo` in their repositories, but `rustup` is recommended for this project: it does not depend on the distribution's package versions and allows switching toolchains.
+
+### 2. System dependencies
+
+Additionally, compilation requires the development headers for GTK4, Libadwaita, and WebKitGTK 6.0.
 
 #### ALT Linux:
 ```bash
@@ -117,7 +146,7 @@ sudo pacman -S --needed \
 
 ---
 
-### 2. Recommended VS Code / VSCodium extensions
+### 3. Recommended VS Code / VSCodium extensions
 
 1. **`rust-lang.rust-analyzer`** — code completion, type checking, GTK API hints, and on-the-fly compilation.
 2. **`vadimcn.vscode-lldb`** — debugger (CodeLLDB) for running with breakpoints via `F5`.
