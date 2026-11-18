@@ -24,7 +24,8 @@ The main goal of the project is to serve as a clear, practical guide to building
   - Configurable monospace font family, soft line wrapping, and padding.
   - **Quick line indentation (`Tab` / `Shift+Tab`)**: when text is selected, pressing `Tab` adds two spaces to the beginning of each selected line, while `Shift+Tab` removes up to two spaces from the beginning of the lines (preserving selection boundaries and supporting undo with `Ctrl+Z`).
   - **Duplicate line `Alt+D`**: a copy of the line under the cursor is inserted below, and the cursor moves to the copy in the same column.
-  - **Move to the beginning and end of the document (`Ctrl+Home` / `Ctrl+End`)**: the cursor moves to the start or end of the current file, and the editor scrolls to the corresponding edge without horizontal shifting.
+  - **Line-by-line scrolling (`Ctrl+Shift+↑` / `Ctrl+Shift+↓`)**: scrolls the editor one visible line up or down without moving the cursor or changing the selection. With soft wrap enabled, the height of a single visual row is used.
+  - **Unified display mode (`Ctrl+Shift+P`)**: enables or disables whitespace display and soft wrap together. If either mode is off, the shortcut turns both on; if both are on, it turns both off. The setting is persisted and applied to every tab.
   - **Meditation mode `Ctrl+Shift+H`**: hides the HeaderBar with menus and buttons, leaving only the text. If a single tab is open, the editor fills the entire window; pressing the shortcut again restores the panel.
 - **GitHub-style Markdown preview**:
   - Quick switching with `Ctrl+E` (like in Obsidian) or with the toggle in the window header.
@@ -64,11 +65,11 @@ The main goal of the project is to serve as a clear, practical guide to building
   - **Tab width** (1–8, default 2) — how many monospace cells an existing `\t` character occupies when displayed.
   - **Indent size** (1–8, default 2) — how many spaces `Tab` and `Shift+Tab` insert. Only spaces are inserted, never tab characters.
   - **Soft wrap** (enabled by default) — long lines wrap to the window width.
-  - **Show spaces and tabs** (enabled by default) — spaces are marked with dots, tabs with horizontal lines.
+  - **Show spaces and tabs** (enabled by default) — spaces are marked with dots, tabs with horizontal lines. Toggled together with soft wrap by `Ctrl+Shift+P`.
   - **Selection from all monospace fonts on the system** (dynamically discovered via Pango Context: `Cascadia Code`, `Fira Code`, `JetBrains Mono`, `Adwaita Mono`, `DejaVu Sans Mono`, `Liberation Mono`, etc.).
   - Editor font size (applied on the fly to existing and newly entered text via the CSS rule `textview.editor-view text`).
   - Preview font size.
-  - **Line number visibility toggle** in edit mode (`adw::SwitchRow`).
+  - **Line number visibility toggle** in edit mode (`adw::SwitchRow`). Numbers are aligned to the first visual row, so on a long soft-wrapped line the number stays at its beginning instead of the middle.
   - Settings are stored as JSON following the XDG standard (`~/.config/aster/settings.json`).
 
 ---
@@ -181,8 +182,8 @@ To install icons in PNG formats, the script uses `rsvg-convert` or Python bindin
 ### 4. Building the release archive
 
 ```bash
-# Prepare a v0.7.3 release with one command
-./package-release.sh v0.7.3
+# Prepare a v0.8.0 release with one command
+./package-release.sh v0.8.0
 
 # Without an argument, the current version from VERSION is used
 ./package-release.sh
