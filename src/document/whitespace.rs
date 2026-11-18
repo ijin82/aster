@@ -34,13 +34,14 @@ fn draw_whitespace(area: &gtk4::DrawingArea, cr: &Context, text_view: &gtk4::Tex
         return;
     }
 
-    let Some(mut iter) = text_view.iter_at_location(visible.x(), visible.y()) else {
-        return;
-    };
-    let end_offset = text_view
-        .iter_at_location(visible.x() + visible.width(), visible.y() + visible.height())
-        .map(|iter| iter.offset())
-        .unwrap_or(i32::MAX);
+    // `visible_rect()` может начинаться выше нуля из-за top_margin
+    // редактора, а iter_at_location в координатах margin возвращает None.
+    // Поэтому берем первую видимую строку через line_at_y, а не итератор
+    // по координате.
+    let (mut iter, _) = text_view.line_at_y(visible.y().max(0));
+    let (end_line_iter, _) = text_view.line_at_y(visible.y() + visible.height());
+    let end_line = end_line_iter.line();
+    let visible_bottom = (visible.y() + visible.height()) as f64;
 
     // Смещение TextView внутри Overlay. buffer_to_window_coords уже учитывает
     // прокрутку, а это смещение — положение самого TextView.
@@ -60,10 +61,13 @@ fn draw_whitespace(area: &gtk4::DrawingArea, cr: &Context, text_view: &gtk4::Tex
     );
     cr.set_line_width(1.0);
 
-    while iter.offset() < end_offset {
+    while iter.line() <= end_line {
         let ch = iter.char();
         if ch == ' ' || ch == '\t' {
             let location = text_view.iter_location(&iter);
+            if (location.y() as f64) > visible_bottom {
+                break;
+            }
             let mut next = iter.clone();
             next.forward_char();
             let next_location = text_view.iter_location(&next);
