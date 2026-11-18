@@ -416,3 +416,19 @@ use super::*;
         assert_eq!(restored_iter.line(), 1);
         assert_eq!(restored_iter.line_offset(), 5);
     }
+
+    #[gtk4::test]
+    fn test_preview_render_cache_reuses_unchanged_html() {
+        let settings = Rc::new(RefCell::new(AppSettings::default()));
+        let doc = Document::new(settings, None, false).expect("create document");
+        doc.buffer.set_text("# Title\n\nBody");
+
+        // Первый вызов загружает HTML в WebView, повторный с тем же
+        // содержимым должен переиспользовать уже отрисованную страницу.
+        assert!(doc.refresh_preview());
+        assert!(!doc.refresh_preview());
+
+        // Изменение Markdown делает кэш недействительным.
+        doc.buffer.set_text("# Title\n\nChanged body");
+        assert!(doc.refresh_preview());
+    }

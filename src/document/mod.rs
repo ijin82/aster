@@ -317,6 +317,13 @@ pub struct Document {
     pub preview_scroll_position: Rc<Cell<f64>>,
     /// Позиция, которую нужно восстановить после следующей загрузки HTML.
     pub pending_preview_scroll: Rc<Cell<Option<f64>>>,
+    /// Последний загруженный HTML предпросмотра и base_uri.
+    ///
+    /// Если содержимое и настройки не менялись, при переключении режимов
+    /// не нужно заново вызывать `load_html`: WebKit сохраняет DOM и позицию
+    /// прокрутки скрытого WebView. Без этого новый документ успевал
+    /// отрисоваться сверху до восстановления сохраненной прокрутки.
+    last_preview_render: RefCell<Option<(String, Option<String>)>>,
 
     /// Общие настройки приложения (тема, шрифты, язык, сессия).
     pub settings: Rc<RefCell<AppSettings>>,
@@ -623,6 +630,7 @@ impl Document {
             suppress_editor_scroll_updates: Rc::new(Cell::new(false)),
             preview_scroll_position: preview_scroll_position.clone(),
             pending_preview_scroll: pending_preview_scroll.clone(),
+            last_preview_render: RefCell::new(None),
             settings: settings.clone(),
             view_stack,
             search_bar,
@@ -889,7 +897,18 @@ impl Document {
         self.replace_toggle.set_visible(false);
 
         self.is_preview_active.set(true);
-        self.refresh_preview();
+        let reloaded = self.refresh_preview();
+
+        // Если HTML не изменился, WebView сохранил старые mark-элементы,
+        // но `switch_to_editor` их очищает. В этом случае подсветку поиска
+        // нужно наложить заново вручную, без перезагрузки страницы.
+        if !reloaded
+            && self.search_bar.is_search_mode()
+            && !self.search_entry.text().is_empty()
+        {
+            self.refresh_preview_search(true);
+        }
+
         self.view_stack.set_visible_child_name("preview");
     }
 
@@ -923,7 +942,10 @@ impl Document {
     }
 
     /// Перерисовывает HTML-предпросмотр из текущего содержимого буфера.
-    pub fn refresh_preview(&self) {
+    ///
+    /// Возвращает `true`, если HTML действительно загружен в WebView, и
+    /// `false`, если отрисованная страница не изменилась и была переиспользована.
+    pub fn refresh_preview(&self) -> bool {
         let start = self.buffer.start_iter();
         let end = self.buffer.end_iter();
         let markdown_text = self.buffer.text(&start, &end, false);
@@ -954,11 +976,23 @@ impl Document {
         );
         drop(settings);
 
+        // Сравниваем и html, и base_uri: при «Сохранить как...» путь мог
+        // измениться, а относительные картинки должны загружаться из новой
+        // папки даже при том же Markdown.
+        if let Some((cached_html, cached_base_uri)) = self.last_preview_render.borrow().as_ref()
+        {
+            if cached_html == &html && cached_base_uri == &base_uri {
+                return false;
+            }
+        }
+
         // Запоминаем желаемую позицию до загрузки: загрузка начнется
         // асинхронно, и скрипт отслеживания не должен успеть обнулить ее.
         self.pending_preview_scroll
             .set(Some(self.preview_scroll_position.get()));
         self.web_view.load_html(&html, base_uri.as_deref());
+        *self.last_preview_render.borrow_mut() = Some((html, base_uri));
+        true
     }
 
     /// Прокручивает редактор к сохраненной позиции после перекомпоновки виджетов.
