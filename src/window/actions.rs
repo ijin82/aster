@@ -138,6 +138,27 @@ pub(crate) fn install_actions(ctx: ActionContext) -> gio::SimpleActionGroup {
     }
     actions.add_action(&toggle_whitespace_wrap_action);
 
+    // Ctrl+Shift+L переключает показ номеров строк. Настройка сохраняется
+    // на диск и применяется ко всем открытым вкладкам, включая скрытые:
+    // при переключении на такую вкладку gutter уже будет в нужном состоянии.
+    let toggle_line_numbers_action = gio::SimpleAction::new("toggle_line_numbers", None);
+    {
+        let settings = settings.clone();
+        let docs = docs.clone();
+        toggle_line_numbers_action.connect_activate(move |_, _| {
+            let visible = {
+                let mut settings = settings.borrow_mut();
+                settings.show_line_numbers = !settings.show_line_numbers;
+                settings.save();
+                settings.show_line_numbers
+            };
+            for doc in docs.borrow().iter() {
+                doc.set_line_numbers_visible(visible);
+            }
+        });
+    }
+    actions.add_action(&toggle_line_numbers_action);
+
     let close_tab_action = gio::SimpleAction::new("close_tab", None);
     {
         let tab_view = tab_view.clone();

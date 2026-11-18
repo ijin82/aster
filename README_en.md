@@ -26,6 +26,7 @@ The main goal of the project is to serve as a clear, practical guide to building
   - **Duplicate line `Alt+D`**: a copy of the line under the cursor is inserted below, and the cursor moves to the copy in the same column.
   - **Line-by-line scrolling (`Ctrl+Shift+↑` / `Ctrl+Shift+↓`)**: scrolls the editor one visible line up or down without moving the cursor or changing the selection. With soft wrap enabled, the height of a single visual row is used.
   - **Unified display mode (`Ctrl+Shift+P`)**: enables or disables whitespace display and soft wrap together. If either mode is off, the shortcut turns both on; if both are on, it turns both off. The setting is persisted and applied to every tab.
+  - **Line number toggle (`Ctrl+Shift+L`)**: shows or hides the line number column in every tab. The setting is persisted across application restarts.
   - **Meditation mode `Ctrl+Shift+H`**: hides the HeaderBar with menus and buttons, leaving only the text. If a single tab is open, the editor fills the entire window; pressing the shortcut again restores the panel.
 - **GitHub-style Markdown preview**:
   - Quick switching with `Ctrl+E` (like in Obsidian) or with the toggle in the window header.
@@ -69,7 +70,7 @@ The main goal of the project is to serve as a clear, practical guide to building
   - **Selection from all monospace fonts on the system** (dynamically discovered via Pango Context: `Cascadia Code`, `Fira Code`, `JetBrains Mono`, `Adwaita Mono`, `DejaVu Sans Mono`, `Liberation Mono`, etc.).
   - Editor font size (applied on the fly to existing and newly entered text via the CSS rule `textview.editor-view text`).
   - Preview font size.
-  - **Line number visibility toggle** in edit mode (`adw::SwitchRow`). Numbers are aligned to the first visual row, so on a long soft-wrapped line the number stays at its beginning instead of the middle.
+  - **Line number visibility toggle** in edit mode (`adw::SwitchRow`) and with the `Ctrl+Shift+L` shortcut. Numbers are aligned to the first visual row, so on a long soft-wrapped line the number stays at its beginning instead of the middle.
   - Settings are stored as JSON following the XDG standard (`~/.config/aster/settings.json`).
 
 ---
