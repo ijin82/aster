@@ -1033,6 +1033,10 @@ pub fn build_window(
     app.set_accels_for_action("win.new_tab", &["<Control>t"]);
     app.set_accels_for_action("win.reopen_tab", &["<Control><Shift>t"]);
     app.set_accels_for_action("win.toggle_meditation", &["<Control><Shift>h"]);
+    app.set_accels_for_action(
+        "win.toggle_whitespace_wrap",
+        &["<Control><Shift>p"],
+    );
     app.set_accels_for_action("win.close_tab", &["<Control>w"]);
     app.set_accels_for_action("win.next_tab", &["<Control>Tab"]);
     app.set_accels_for_action(

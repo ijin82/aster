@@ -130,6 +130,7 @@ pub fn ctrl_shortcut_action(key: char, shift: bool) -> Option<&'static str> {
             's' => Some("win.save_as"),
             't' => Some("win.reopen_tab"),
             'h' => Some("win.toggle_meditation"),
+            'p' => Some("win.toggle_whitespace_wrap"),
             '\t' => Some("win.previous_tab"),
             _ => None,
         }
@@ -193,6 +194,10 @@ mod tests {
         assert_eq!(ctrl_shortcut_action('s', false), Some("win.save"));
         assert_eq!(ctrl_shortcut_action('s', true), Some("win.save_as"));
         assert_eq!(ctrl_shortcut_action('r', false), Some("win.find_replace"));
+        assert_eq!(
+            ctrl_shortcut_action('p', true),
+            Some("win.toggle_whitespace_wrap")
+        );
         assert_eq!(ctrl_shortcut_action(',', false), Some("win.preferences"));
         assert_eq!(ctrl_shortcut_action('\t', false), Some("win.next_tab"));
         assert_eq!(

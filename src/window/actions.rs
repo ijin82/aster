@@ -120,6 +120,24 @@ pub(crate) fn install_actions(ctx: ActionContext) -> gio::SimpleActionGroup {
     }
     actions.add_action(&meditation_action);
 
+    // Единый режим отображения: Ctrl+Shift+P включает или выключает
+    // одновременно показ пробелов и мягкий перенос строк. Настройки
+    // сохраняются на диск и сразу применяются ко всем открытым вкладкам.
+    let toggle_whitespace_wrap_action =
+        gio::SimpleAction::new("toggle_whitespace_wrap", None);
+    {
+        let settings = settings.clone();
+        let docs = docs.clone();
+        toggle_whitespace_wrap_action.connect_activate(move |_, _| {
+            settings.borrow_mut().toggle_whitespace_wrap();
+            settings.borrow().save();
+            for doc in docs.borrow().iter() {
+                doc.apply_editor_options();
+            }
+        });
+    }
+    actions.add_action(&toggle_whitespace_wrap_action);
+
     let close_tab_action = gio::SimpleAction::new("close_tab", None);
     {
         let tab_view = tab_view.clone();

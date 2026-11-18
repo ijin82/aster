@@ -90,6 +90,7 @@ pub(super) fn setup_editor_key_handling(
 
         let is_control = state.contains(gtk4::gdk::ModifierType::CONTROL_MASK);
         let is_alt = state.contains(gtk4::gdk::ModifierType::ALT_MASK);
+        let is_shift = state.contains(gtk4::gdk::ModifierType::SHIFT_MASK);
 
         if is_control && !is_alt {
             let is_home =
@@ -120,6 +121,21 @@ pub(super) fn setup_editor_key_handling(
                     is_home,
                     soft_wrap,
                 );
+                return glib::Propagation::Stop;
+            }
+
+            // Ctrl+Shift+Up / Ctrl+Shift+Down прокручивают редактор на одну
+            // видимую строку, не перемещая курсор и не меняя выделение.
+            // Обрабатываем здесь, а не через действия окна, потому что
+            // прокрутка должна работать только при фокусе в редакторе и
+            // учитывать реальную высоту строки с мягким переносом.
+            let is_up = keyval == gtk4::gdk::Key::Up || keyval == gtk4::gdk::Key::KP_Up;
+            let is_down =
+                keyval == gtk4::gdk::Key::Down || keyval == gtk4::gdk::Key::KP_Down;
+            if is_shift && (is_up || is_down) {
+                if let Some(editor_scroll) = editor_scroll_weak.upgrade() {
+                    scroll_editor_by_visual_line(&text_view, &editor_scroll, is_up);
+                }
                 return glib::Propagation::Stop;
             }
 
@@ -165,7 +181,6 @@ pub(super) fn setup_editor_key_handling(
             }
         }
 
-        let is_shift = state.contains(gtk4::gdk::ModifierType::SHIFT_MASK);
         let is_tab = keyval == gtk4::gdk::Key::Tab;
         let is_iso_left_tab = keyval == gtk4::gdk::Key::ISO_Left_Tab;
 
@@ -188,6 +203,31 @@ pub(super) fn setup_editor_key_handling(
     });
 
     text_view.add_controller(key_controller);
+}
+
+/// Прокручивает редактор на одну видимую строку вверх или вниз.
+///
+/// Высота берется у символа первой видимой строки. В режиме мягкого
+/// переноса `line_yrange` возвращает высоту всей логической строки, а
+/// `iter_location` — высоту одного визуального ряда, поэтому прокрутка
+/// остается плавной и не перескакивает через весь перенос.
+fn scroll_editor_by_visual_line(
+    text_view: &gtk4::TextView,
+    editor_scroll: &gtk4::ScrolledWindow,
+    up: bool,
+) {
+    let adjustment = editor_scroll.vadjustment();
+    let visible = text_view.visible_rect();
+    let probe_y = visible.y().max(0);
+
+    let (iter, _) = text_view.line_at_y(probe_y);
+    let line_height = text_view.iter_location(&iter).height().max(1) as f64;
+
+    let lower = adjustment.lower();
+    let upper = (adjustment.upper() - adjustment.page_size()).max(lower);
+    let delta = if up { -line_height } else { line_height };
+    let target = (adjustment.value() + delta).clamp(lower, upper);
+    adjustment.set_value(target);
 }
 
 /// Прокручивает редактор к началу или концу документа.

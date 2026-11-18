@@ -181,6 +181,19 @@ impl AppSettings {
         Self::default()
     }
 
+    /// Переключает единый режим отображения пробелов и мягкого переноса.
+    ///
+    /// Возвращает новое состояние режима. Если хотя бы одна из двух
+    /// настроек выключена, режим включается целиком; если обе включены —
+    /// выключаются обе. Так `Ctrl+Shift+P` всегда приводит редактор к
+    /// одному из двух предсказуемых состояний, а не оставляет смешанное.
+    pub fn toggle_whitespace_wrap(&mut self) -> bool {
+        let enabled = !(self.show_whitespace && self.soft_wrap);
+        self.show_whitespace = enabled;
+        self.soft_wrap = enabled;
+        enabled
+    }
+
     /// Сохраняет текущие настройки на диск в формате JSON с отступами.
     ///
     /// Запись выполняется атомарно: сначала во временный файл рядом с
@@ -268,6 +281,29 @@ mod tests {
         assert_eq!(restored.indent_width, 2);
         assert!(restored.soft_wrap);
         assert!(restored.show_whitespace);
+    }
+
+    #[test]
+    fn test_toggle_whitespace_wrap_is_atomic() {
+        let mut settings = AppSettings::default();
+        assert!(settings.show_whitespace);
+        assert!(settings.soft_wrap);
+
+        // Оба включены -> выключаются оба.
+        assert!(!settings.toggle_whitespace_wrap());
+        assert!(!settings.show_whitespace);
+        assert!(!settings.soft_wrap);
+
+        // Оба выключены -> включаются оба.
+        assert!(settings.toggle_whitespace_wrap());
+        assert!(settings.show_whitespace);
+        assert!(settings.soft_wrap);
+
+        // Смешанное состояние тоже приводится к включенному режиму.
+        settings.soft_wrap = false;
+        assert!(settings.toggle_whitespace_wrap());
+        assert!(settings.show_whitespace);
+        assert!(settings.soft_wrap);
     }
 }
 
