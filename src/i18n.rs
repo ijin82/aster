@@ -460,6 +460,76 @@ impl Language {
         }
     }
 
+    pub fn pref_editor_group_title(&self) -> &'static str {
+        match self {
+            Language::Russian => "Редактор",
+            Language::English => "Editor",
+        }
+    }
+
+    pub fn pref_editor_group_desc(&self) -> &'static str {
+        match self {
+            Language::Russian => "Отступы, перенос строк и отображение пробелов",
+            Language::English => "Indentation, line wrapping, and whitespace display",
+        }
+    }
+
+    pub fn pref_tab_width_title(&self) -> &'static str {
+        match self {
+            Language::Russian => "Ширина табуляции",
+            Language::English => "Tab Width",
+        }
+    }
+
+    pub fn pref_tab_width_subtitle(&self) -> &'static str {
+        match self {
+            Language::Russian => "Ширина существующих символов табуляции в моноширинных знаках",
+            Language::English => "Display width of existing tab characters in monospace cells",
+        }
+    }
+
+    pub fn pref_indent_width_title(&self) -> &'static str {
+        match self {
+            Language::Russian => "Размер отступов",
+            Language::English => "Indent Size",
+        }
+    }
+
+    pub fn pref_indent_width_subtitle(&self) -> &'static str {
+        match self {
+            Language::Russian => "Сколько пробелов вставляют Tab и Shift+Tab (табы не вставляются)",
+            Language::English => "Number of spaces inserted by Tab and Shift+Tab (no tab characters)",
+        }
+    }
+
+    pub fn pref_soft_wrap_title(&self) -> &'static str {
+        match self {
+            Language::Russian => "Перенос строк",
+            Language::English => "Soft Wrap",
+        }
+    }
+
+    pub fn pref_soft_wrap_subtitle(&self) -> &'static str {
+        match self {
+            Language::Russian => "Переносить длинные строки по ширине окна",
+            Language::English => "Wrap long lines to the window width",
+        }
+    }
+
+    pub fn pref_show_whitespace_title(&self) -> &'static str {
+        match self {
+            Language::Russian => "Показывать пробелы и табы",
+            Language::English => "Show Spaces and Tabs",
+        }
+    }
+
+    pub fn pref_show_whitespace_subtitle(&self) -> &'static str {
+        match self {
+            Language::Russian => "Отмечать пробелы точками, а табы — горизонтальными линиями",
+            Language::English => "Mark spaces with dots and tabs with horizontal lines",
+        }
+    }
+
     pub fn pref_fonts_group_title(&self) -> &'static str {
         match self {
             Language::Russian => "Шрифты",

@@ -12,9 +12,6 @@ use super::search::{
 };
 use super::*;
 
-
-    use super::*;
-
     #[gtk4::test]
     fn test_indent_and_unindent() {
         let buffer = gtk4::TextBuffer::new(None);
@@ -24,13 +21,31 @@ use super::*;
         let end = buffer.iter_at_line_offset(1, 3).unwrap();
         buffer.select_range(&start, &end);
 
-        indent_selection_or_cursor(&buffer);
+        indent_selection_or_cursor(&buffer, 2);
         let full_text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
         assert_eq!(full_text.as_str(), "  line 1\n  line 2\nline 3\n");
 
-        unindent_selection_or_cursor(&buffer);
+        unindent_selection_or_cursor(&buffer, 2);
         let text_after_unindent = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
         assert_eq!(text_after_unindent.as_str(), "line 1\nline 2\nline 3\n");
+
+        let buffer = gtk4::TextBuffer::new(None);
+        buffer.set_text("line\n");
+        buffer.place_cursor(&buffer.start_iter());
+        indent_selection_or_cursor(&buffer, 4);
+        assert_eq!(
+            buffer
+                .text(&buffer.start_iter(), &buffer.end_iter(), false)
+                .as_str(),
+            "    line\n"
+        );
+        unindent_selection_or_cursor(&buffer, 4);
+        assert_eq!(
+            buffer
+                .text(&buffer.start_iter(), &buffer.end_iter(), false)
+                .as_str(),
+            "line\n"
+        );
     }
 
     #[gtk4::test]
@@ -140,7 +155,8 @@ use super::*;
 
         let editor_scroll = gtk4::ScrolledWindow::new();
         editor_scroll.set_child(Some(&text_view));
-        setup_editor_key_handling(&text_view, &editor_scroll);
+        let settings = Rc::new(RefCell::new(AppSettings::default()));
+        setup_editor_key_handling(&text_view, &editor_scroll, settings);
 
         drop(text_view);
         // ScrolledWindow владеет TextView, поэтому сначала освобождаем
@@ -150,6 +166,26 @@ use super::*;
             weak_text_view.upgrade().is_none(),
             "key controller keeps TextView alive"
         );
+    }
+
+    #[gtk4::test]
+    fn test_editor_options_are_applied() {
+        let settings = Rc::new(RefCell::new(AppSettings::default()));
+        let doc = Document::new(settings.clone(), None, false).expect("create document");
+
+        assert!(doc.show_whitespace.get());
+        assert!(doc.text_view.tabs().is_some());
+
+        settings.borrow_mut().soft_wrap = false;
+        settings.borrow_mut().show_whitespace = false;
+        doc.apply_editor_options();
+
+        assert_eq!(doc.text_view.wrap_mode(), gtk4::WrapMode::None);
+        assert!(!doc.show_whitespace.get());
+
+        settings.borrow_mut().soft_wrap = true;
+        doc.apply_editor_options();
+        assert_eq!(doc.text_view.wrap_mode(), gtk4::WrapMode::Word);
     }
 
     #[gtk4::test]

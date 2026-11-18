@@ -43,6 +43,7 @@ pub(super) fn apply_restored_cursor_position(
 pub(super) fn schedule_cursor_scroll(
     text_view: &gtk4::TextView,
     editor_scroll: &gtk4::ScrolledWindow,
+    soft_wrap: bool,
 ) {
     let text_view_clone = text_view.clone();
     let editor_scroll_clone = editor_scroll.clone();
@@ -57,10 +58,13 @@ pub(super) fn schedule_cursor_scroll(
         }
 
         // В режиме переноса строк горизонтальная прокрутка не должна
-        // сдвигать текст: это оставляет пустую полосу справа.
-        let adjustment = editor_scroll_clone.hadjustment();
-        adjustment.set_value(0.0);
-        glib::idle_add_local_once(move || adjustment.set_value(0.0));
+        // сдвигать текст: это оставляет пустую полосу справа. Без переноса
+        // горизонтальная прокрутка нужна для длинных строк.
+        if soft_wrap {
+            let adjustment = editor_scroll_clone.hadjustment();
+            adjustment.set_value(0.0);
+            glib::idle_add_local_once(move || adjustment.set_value(0.0));
+        }
     });
 }
 
@@ -68,6 +72,7 @@ pub(super) fn schedule_cursor_scroll(
 pub(super) fn setup_editor_key_handling(
     text_view: &gtk4::TextView,
     editor_scroll: &gtk4::ScrolledWindow,
+    settings: Rc<RefCell<AppSettings>>,
 ) {
     let key_controller = gtk4::EventControllerKey::new();
     key_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
@@ -100,6 +105,7 @@ pub(super) fn setup_editor_key_handling(
                 let Some(editor_scroll) = editor_scroll_weak.upgrade() else {
                     return glib::Propagation::Proceed;
                 };
+                let soft_wrap = settings.borrow().soft_wrap;
                 let buffer = text_view.buffer();
                 let mut iter = if is_home {
                     buffer.start_iter()
@@ -107,7 +113,13 @@ pub(super) fn setup_editor_key_handling(
                     buffer.end_iter()
                 };
                 buffer.place_cursor(&iter);
-                scroll_to_edge(&text_view, &editor_scroll, &mut iter, is_home);
+                scroll_to_edge(
+                    &text_view,
+                    &editor_scroll,
+                    &mut iter,
+                    is_home,
+                    soft_wrap,
+                );
                 return glib::Propagation::Stop;
             }
 
@@ -162,12 +174,13 @@ pub(super) fn setup_editor_key_handling(
         }
 
         let buffer = text_view.buffer();
+        let indent_width = settings.borrow().indent_width.clamp(1, 8) as i32;
 
         if is_iso_left_tab || (is_tab && is_shift) {
-            unindent_selection_or_cursor(&buffer);
+            unindent_selection_or_cursor(&buffer, indent_width);
             glib::Propagation::Stop
         } else if is_tab && !is_shift {
-            indent_selection_or_cursor(&buffer);
+            indent_selection_or_cursor(&buffer, indent_width);
             glib::Propagation::Stop
         } else {
             glib::Propagation::Proceed
@@ -186,13 +199,17 @@ fn scroll_to_edge(
     editor_scroll: &gtk4::ScrolledWindow,
     iter: &mut gtk4::TextIter,
     is_home: bool,
+    soft_wrap: bool,
 ) {
     let yalign = if is_home { 0.0 } else { 1.0 };
-    text_view.scroll_to_iter(iter, 0.0, true, 0.0, yalign);
+    let xalign = if is_home || soft_wrap { 0.0 } else { 1.0 };
+    text_view.scroll_to_iter(iter, 0.0, true, xalign, yalign);
 
-    let adjustment = editor_scroll.hadjustment();
-    adjustment.set_value(0.0);
-    glib::idle_add_local_once(move || adjustment.set_value(0.0));
+    if soft_wrap {
+        let adjustment = editor_scroll.hadjustment();
+        adjustment.set_value(0.0);
+        glib::idle_add_local_once(move || adjustment.set_value(0.0));
+    }
 }
 
 /// Дублирует строку под курсором и ставит курсор на копию.
@@ -247,7 +264,9 @@ pub(super) fn duplicate_current_line(buffer: &gtk4::TextBuffer) {
 }
 
 /// Добавляет два пробела в начало каждой выделенной строки или в позицию курсора.
-pub(super) fn indent_selection_or_cursor(buffer: &gtk4::TextBuffer) {
+pub(super) fn indent_selection_or_cursor(buffer: &gtk4::TextBuffer, indent_width: i32) {
+    let indent_width = indent_width.clamp(1, 8);
+    let spaces = " ".repeat(indent_width as usize);
     if let Some((start_iter, end_iter)) = buffer.selection_bounds() {
         if start_iter != end_iter {
             let start_line = start_iter.line();
@@ -264,13 +283,17 @@ pub(super) fn indent_selection_or_cursor(buffer: &gtk4::TextBuffer) {
 
             for line_idx in start_line..=end_line {
                 if let Some(mut line_iter) = buffer.iter_at_line(line_idx) {
-                    buffer.insert(&mut line_iter, "  ");
+                    buffer.insert(&mut line_iter, &spaces);
                 }
             }
 
-            let new_start_col = if start_col > 0 { start_col + 2 } else { 0 };
+            let new_start_col = if start_col > 0 {
+                start_col + indent_width
+            } else {
+                0
+            };
             let new_end_col = if original_end_line == end_line && end_col > 0 {
-                end_col + 2
+                end_col + indent_width
             } else {
                 end_col
             };
@@ -294,12 +317,13 @@ pub(super) fn indent_selection_or_cursor(buffer: &gtk4::TextBuffer) {
     }
 
     buffer.begin_user_action();
-    buffer.insert_at_cursor("  ");
+    buffer.insert_at_cursor(&spaces);
     buffer.end_user_action();
 }
 
 /// Удаляет до двух начальных пробелов (или один Tab) с выделенных строк / строки курсора.
-pub(super) fn unindent_selection_or_cursor(buffer: &gtk4::TextBuffer) {
+pub(super) fn unindent_selection_or_cursor(buffer: &gtk4::TextBuffer, indent_width: i32) {
+    let indent_width = indent_width.clamp(1, 8);
     if let Some((start_iter, end_iter)) = buffer.selection_bounds() {
         if start_iter != end_iter {
             let start_line = start_iter.line();
@@ -316,18 +340,7 @@ pub(super) fn unindent_selection_or_cursor(buffer: &gtk4::TextBuffer) {
 
             for line_idx in start_line..=end_line {
                 if let Some(mut line_iter) = buffer.iter_at_line(line_idx) {
-                    let mut chars_to_del = 0;
-                    let c1 = line_iter.char();
-                    if c1 == ' ' {
-                        chars_to_del += 1;
-                        let mut next = line_iter.clone();
-                        next.forward_char();
-                        if next.char() == ' ' {
-                            chars_to_del += 1;
-                        }
-                    } else if c1 == '\t' {
-                        chars_to_del = 1;
-                    }
+                    let chars_to_del = leading_indent_chars(&line_iter, indent_width);
 
                     if chars_to_del > 0 {
                         let mut del_end = line_iter.clone();
@@ -371,18 +384,7 @@ pub(super) fn unindent_selection_or_cursor(buffer: &gtk4::TextBuffer) {
 
     let mut new_col = cur_col;
     if let Some(mut line_iter) = buffer.iter_at_line(cur_line) {
-        let mut chars_to_del = 0;
-        let c1 = line_iter.char();
-        if c1 == ' ' {
-            chars_to_del += 1;
-            let mut next = line_iter.clone();
-            next.forward_char();
-            if next.char() == ' ' {
-                chars_to_del += 1;
-            }
-        } else if c1 == '\t' {
-            chars_to_del = 1;
-        }
+        let chars_to_del = leading_indent_chars(&line_iter, indent_width);
 
         if chars_to_del > 0 {
             let mut del_end = line_iter.clone();
@@ -400,4 +402,27 @@ pub(super) fn unindent_selection_or_cursor(buffer: &gtk4::TextBuffer) {
     }
 
     buffer.end_user_action();
+}
+
+
+/// Сколько символов нужно удалить в начале строки для Shift+Tab.
+///
+/// Таб считается одним символом, пробелы — до `indent_width` подряд.
+fn leading_indent_chars(start: &gtk4::TextIter, indent_width: i32) -> i32 {
+    if start.char() == '\t' {
+        return 1;
+    }
+
+    let mut iter = start.clone();
+    let mut count = 0;
+    for _ in 0..indent_width {
+        if iter.char() != ' ' {
+            break;
+        }
+        count += 1;
+        if !iter.forward_char() {
+            break;
+        }
+    }
+    count
 }

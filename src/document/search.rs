@@ -358,6 +358,12 @@ impl Document {
 
     /// Возвращает горизонтальную прокрутку редактора в начало.
     fn reset_editor_horizontal_scroll(&self) {
+        // Без переноса строк горизонтальная прокрутка нужна, чтобы
+        // добраться до конца длинной строки.
+        if !self.settings.borrow().soft_wrap {
+            return;
+        }
+
         let adjustment = self.editor_scroll.hadjustment();
         adjustment.set_value(0.0);
 

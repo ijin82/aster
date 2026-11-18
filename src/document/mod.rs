@@ -35,11 +35,13 @@ mod links;
 mod search;
 #[cfg(test)]
 mod tests;
+mod whitespace;
 
 use editor::{
     apply_restored_cursor_position, schedule_cursor_scroll, setup_editor_key_handling,
 };
 use gutter::setup_line_numbers_gutter;
+use whitespace::setup_whitespace_layer;
 
 /// Имя обработчика JavaScript-сообщений, через который WebKit сообщает
 /// актуальную позицию прокрутки предпросмотра.
@@ -363,6 +365,10 @@ pub struct Document {
     pub text_view: gtk4::TextView,
     /// Прокручиваемая область редактора.
     pub editor_scroll: gtk4::ScrolledWindow,
+    /// Прозрачный слой для отрисовки пробелов и табов.
+    pub whitespace_area: gtk4::DrawingArea,
+    /// Показывать ли пробелы и табы.
+    pub show_whitespace: Rc<Cell<bool>>,
     /// Колонка с номерами строк.
     pub gutter: gtk4::DrawingArea,
     /// Таблица тегов (нужна для смены цветов подсветки).
@@ -439,10 +445,30 @@ impl Document {
             .vexpand(true)
             .build();
 
-        // Перерисовываем номера строк при любой прокрутке редактора.
+        // Прозрачный слой поверх редактора для точек пробелов и линий табов.
+        let whitespace_area = gtk4::DrawingArea::new();
+        whitespace_area.set_hexpand(true);
+        whitespace_area.set_vexpand(true);
+        whitespace_area.set_halign(gtk4::Align::Fill);
+        whitespace_area.set_valign(gtk4::Align::Fill);
+        whitespace_area.set_can_target(false);
+        let show_whitespace = Rc::new(Cell::new(settings.borrow().show_whitespace));
+        setup_whitespace_layer(&whitespace_area, &text_view, show_whitespace.clone());
+
+        let editor_overlay = gtk4::Overlay::new();
+        editor_overlay.set_child(Some(&editor_scroll));
+        editor_overlay.add_overlay(&whitespace_area);
+
+        // Перерисовываем номера строк и слой пробелов при любой прокрутке.
         let gutter_for_scroll = gutter.clone();
+        let whitespace_for_vscroll = whitespace_area.clone();
         editor_scroll.vadjustment().connect_value_changed(move |_| {
             gutter_for_scroll.queue_draw();
+            whitespace_for_vscroll.queue_draw();
+        });
+        let whitespace_for_hscroll = whitespace_area.clone();
+        editor_scroll.hadjustment().connect_value_changed(move |_| {
+            whitespace_for_hscroll.queue_draw();
         });
 
         // --- Панель поиска ---
@@ -510,7 +536,7 @@ impl Document {
 
         // --- Стек режимов документа ---
         let view_stack = adw::ViewStack::new();
-        view_stack.add_titled(&editor_scroll, Some("editor"), lang.tab_editor());
+        view_stack.add_titled(&editor_overlay, Some("editor"), lang.tab_editor());
 
         // --- Предпросмотр WebKit ---
         let user_content_manager = UserContentManager::new();
@@ -619,6 +645,8 @@ impl Document {
             buffer,
             text_view,
             editor_scroll,
+            whitespace_area,
+            show_whitespace,
             gutter,
             tag_table,
             web_view,
@@ -634,6 +662,7 @@ impl Document {
             preview_scroll_position,
             pending_preview_scroll,
         );
+        doc.apply_editor_options();
 
         // Загружаем начальный файл, если он передан. Позиции курсора и
         // прокрутки берутся из настроек по каноническому пути.
@@ -677,6 +706,7 @@ impl Document {
                 }
 
                 doc.gutter.queue_draw();
+                doc.whitespace_area.queue_draw();
                 highlighter::highlight_markdown_buffer(buf);
                 if !doc.suppress_search_refresh.get() {
                     doc.refresh_search_matches(false);
@@ -762,7 +792,11 @@ impl Document {
 
         // 5. Клавиатура: Tab/Shift+Tab для отступов и подавление звука
         //    на границах документа.
-        setup_editor_key_handling(&self.text_view, &self.editor_scroll);
+        setup_editor_key_handling(
+            &self.text_view,
+            &self.editor_scroll,
+            self.settings.clone(),
+        );
 
         // 6. Поиск по буферу текущего документа.
         self.setup_search();
@@ -816,7 +850,11 @@ impl Document {
         if self.had_saved_view_state.get() {
             self.schedule_editor_scroll();
         } else {
-            schedule_cursor_scroll(&self.text_view, &self.editor_scroll);
+            schedule_cursor_scroll(
+            &self.text_view,
+            &self.editor_scroll,
+            self.settings.borrow().soft_wrap,
+        );
         }
 
         Ok(())
@@ -1159,7 +1197,11 @@ impl Document {
         if self.is_preview_active.get() {
             self.refresh_preview();
         }
-        schedule_cursor_scroll(&self.text_view, &self.editor_scroll);
+        schedule_cursor_scroll(
+            &self.text_view,
+            &self.editor_scroll,
+            self.settings.borrow().soft_wrap,
+        );
         Ok(())
     }
 
@@ -1183,7 +1225,11 @@ impl Document {
         self.is_modified.set(true);
         *self.last_external_file_hash.borrow_mut() = None;
         self.update_tab_title();
-        schedule_cursor_scroll(&self.text_view, &self.editor_scroll);
+        schedule_cursor_scroll(
+            &self.text_view,
+            &self.editor_scroll,
+            self.settings.borrow().soft_wrap,
+        );
     }
 
     /// Экспортирует позицию курсора и прокрутки в общие настройки.
@@ -1236,6 +1282,50 @@ impl Document {
             .map(|p| get_file_canonical_key(p))
     }
 
+    /// Применяет настройки редактора к текущему документу.
+    ///
+    /// Вызывается при создании вкладки и при изменении соответствующих
+    /// переключателей в Preferences.
+    pub fn apply_editor_options(&self) {
+        let (soft_wrap, tab_width, show_whitespace) = {
+            let settings = self.settings.borrow();
+            (
+                settings.soft_wrap,
+                settings.tab_width,
+                settings.show_whitespace,
+            )
+        };
+
+        self.text_view.set_wrap_mode(if soft_wrap {
+            gtk4::WrapMode::Word
+        } else {
+            gtk4::WrapMode::None
+        });
+        self.show_whitespace.set(show_whitespace);
+        self.whitespace_area.queue_draw();
+        self.update_tab_stops(tab_width);
+
+        // При включении переноса возвращаем горизонтальную прокрутку в 0,
+        // иначе после режима без переноса справа остается пустая полоса.
+        if soft_wrap {
+            self.editor_scroll.hadjustment().set_value(0.0);
+        }
+    }
+
+    /// Настраивает ширину табуляции в пикселях через Pango TabArray.
+    fn update_tab_stops(&self, tab_width: u32) {
+        let cells = tab_width.clamp(1, 8) as i32;
+        let layout = self.text_view.create_pango_layout(Some("M"));
+        let (cell_width, _) = layout.pixel_size();
+        let step = (cell_width.max(1) * cells).max(1);
+
+        let mut tabs = gtk4::pango::TabArray::new(64, true);
+        for index in 0..64 {
+            tabs.set_tab(index, gtk4::pango::TabAlign::Left, index * step);
+        }
+        self.text_view.set_tabs(&tabs);
+    }
+
     /// Обновляет подписи документа при смене языка интерфейса.
     pub fn apply_language(&self, lang: Language) {
         self.view_stack
@@ -1261,6 +1351,7 @@ impl Document {
 
     /// Применяет новую цветовую тему к подсветке и номерам строк.
     pub fn apply_theme(&self, theme: &str, is_dark: bool) {
+        self.whitespace_area.queue_draw();
         highlighter::update_highlight_colors(&self.tag_table, theme, is_dark);
         highlighter::highlight_markdown_buffer(&self.buffer);
         self.gutter.queue_draw();

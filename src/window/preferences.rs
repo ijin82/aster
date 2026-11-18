@@ -167,6 +167,103 @@ pub(crate) fn show_preferences_dialog(
     layout_group.add(&padding_spin);
     page.add(&layout_group);
 
+    // --- Редактор ---
+    let editor_group = adw::PreferencesGroup::builder()
+        .title(current_lang.pref_editor_group_title())
+        .description(current_lang.pref_editor_group_desc())
+        .build();
+
+    let tab_width_spin = adw::SpinRow::builder()
+        .title(current_lang.pref_tab_width_title())
+        .subtitle(current_lang.pref_tab_width_subtitle())
+        .adjustment(&gtk4::Adjustment::new(
+            settings.borrow().tab_width as f64,
+            1.0,
+            8.0,
+            1.0,
+            1.0,
+            0.0,
+        ))
+        .build();
+
+    {
+        let settings = settings.clone();
+        let docs = docs.clone();
+        tab_width_spin.connect_changed(move |row| {
+            settings.borrow_mut().tab_width = row.value() as u32;
+            settings.borrow().save();
+            for doc in docs.borrow().iter() {
+                doc.apply_editor_options();
+            }
+        });
+    }
+    editor_group.add(&tab_width_spin);
+
+    let indent_width_spin = adw::SpinRow::builder()
+        .title(current_lang.pref_indent_width_title())
+        .subtitle(current_lang.pref_indent_width_subtitle())
+        .adjustment(&gtk4::Adjustment::new(
+            settings.borrow().indent_width as f64,
+            1.0,
+            8.0,
+            1.0,
+            1.0,
+            0.0,
+        ))
+        .build();
+
+    {
+        let settings = settings.clone();
+        let docs = docs.clone();
+        indent_width_spin.connect_changed(move |row| {
+            settings.borrow_mut().indent_width = row.value() as u32;
+            settings.borrow().save();
+            for doc in docs.borrow().iter() {
+                doc.apply_editor_options();
+            }
+        });
+    }
+    editor_group.add(&indent_width_spin);
+
+    let soft_wrap_row = adw::SwitchRow::builder()
+        .title(current_lang.pref_soft_wrap_title())
+        .subtitle(current_lang.pref_soft_wrap_subtitle())
+        .active(settings.borrow().soft_wrap)
+        .build();
+
+    {
+        let settings = settings.clone();
+        let docs = docs.clone();
+        soft_wrap_row.connect_active_notify(move |row| {
+            settings.borrow_mut().soft_wrap = row.is_active();
+            settings.borrow().save();
+            for doc in docs.borrow().iter() {
+                doc.apply_editor_options();
+            }
+        });
+    }
+    editor_group.add(&soft_wrap_row);
+
+    let show_whitespace_row = adw::SwitchRow::builder()
+        .title(current_lang.pref_show_whitespace_title())
+        .subtitle(current_lang.pref_show_whitespace_subtitle())
+        .active(settings.borrow().show_whitespace)
+        .build();
+
+    {
+        let settings = settings.clone();
+        let docs = docs.clone();
+        show_whitespace_row.connect_active_notify(move |row| {
+            settings.borrow_mut().show_whitespace = row.is_active();
+            settings.borrow().save();
+            for doc in docs.borrow().iter() {
+                doc.apply_editor_options();
+            }
+        });
+    }
+    editor_group.add(&show_whitespace_row);
+    page.add(&editor_group);
+
     // --- Шрифты ---
     let fonts_group = adw::PreferencesGroup::builder()
         .title(current_lang.pref_fonts_group_title())
@@ -215,6 +312,7 @@ pub(crate) fn show_preferences_dialog(
                 size,
             );
             for doc in docs.borrow().iter() {
+                doc.apply_editor_options();
                 doc.gutter.queue_draw();
             }
         });
@@ -253,6 +351,7 @@ pub(crate) fn show_preferences_dialog(
                 size,
             );
             for doc in docs.borrow().iter() {
+                doc.apply_editor_options();
                 doc.gutter.queue_draw();
             }
         });

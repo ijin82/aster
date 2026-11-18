@@ -60,6 +60,18 @@ pub struct AppSettings {
     /// Показывать ли номера строк в редакторе текста.
     #[serde(default = "default_show_line_numbers")]
     pub show_line_numbers: bool,
+    /// Ширина символа табуляции при отображении, в количестве моноширинных знаков.
+    #[serde(default = "default_tab_width")]
+    pub tab_width: u32,
+    /// Количество пробелов, которое вставляет Tab и добавляет автоотступ.
+    #[serde(default = "default_indent_width")]
+    pub indent_width: u32,
+    /// Включен ли мягкий перенос строк.
+    #[serde(default = "default_soft_wrap")]
+    pub soft_wrap: bool,
+    /// Показывать ли пробелы и табы в редакторе.
+    #[serde(default = "default_show_whitespace")]
+    pub show_whitespace: bool,
     /// Сохраненные позиции курсора (строка, колонка) для недавно открывавшихся файлов.
     #[serde(default)]
     pub file_cursor_positions: HashMap<String, (usize, usize)>,
@@ -80,6 +92,22 @@ pub struct AppSettings {
 }
 
 fn default_show_line_numbers() -> bool {
+    true
+}
+
+fn default_tab_width() -> u32 {
+    2
+}
+
+fn default_indent_width() -> u32 {
+    2
+}
+
+fn default_soft_wrap() -> bool {
+    true
+}
+
+fn default_show_whitespace() -> bool {
     true
 }
 
@@ -116,6 +144,10 @@ impl Default for AppSettings {
             window_height: default_window_height(),
             language: default_language(),
             show_line_numbers: default_show_line_numbers(),
+            tab_width: default_tab_width(),
+            indent_width: default_indent_width(),
+            soft_wrap: default_soft_wrap(),
+            show_whitespace: default_show_whitespace(),
             file_cursor_positions: HashMap::new(),
             file_view_states: HashMap::new(),
             session_files: Vec::new(),
@@ -232,6 +264,10 @@ mod tests {
         assert_eq!(restored.session_active_document, 0);
         assert!(restored.file_view_states.is_empty());
         assert_eq!(restored.language, "ru");
+        assert_eq!(restored.tab_width, 2);
+        assert_eq!(restored.indent_width, 2);
+        assert!(restored.soft_wrap);
+        assert!(restored.show_whitespace);
     }
 }
 

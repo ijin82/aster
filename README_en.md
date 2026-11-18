@@ -61,6 +61,10 @@ The main goal of the project is to serve as a clear, practical guide to building
   - **Interface language selection**: switching between **Russian** and **English** with instant UI updates and persistence in settings.
   - Theme selection: **System**, **GitHub Light**, **GitHub Dark**, **Dracula**, **Kimbie Dark**, **Solarized Dark**, **Solarized Light** (applied to both the preview and the code editor).
   - Preview side padding adjustment (padding in %, 5% on each side by default).
+  - **Tab width** (1–8, default 2) — how many monospace cells an existing `\t` character occupies when displayed.
+  - **Indent size** (1–8, default 2) — how many spaces `Tab` and `Shift+Tab` insert. Only spaces are inserted, never tab characters.
+  - **Soft wrap** (enabled by default) — long lines wrap to the window width.
+  - **Show spaces and tabs** (enabled by default) — spaces are marked with dots, tabs with horizontal lines.
   - **Selection from all monospace fonts on the system** (dynamically discovered via Pango Context: `Cascadia Code`, `Fira Code`, `JetBrains Mono`, `Adwaita Mono`, `DejaVu Sans Mono`, `Liberation Mono`, etc.).
   - Editor font size (applied on the fly to existing and newly entered text via the CSS rule `textview.editor-view text`).
   - Preview font size.
@@ -177,8 +181,8 @@ To install icons in PNG formats, the script uses `rsvg-convert` or Python bindin
 ### 4. Building the release archive
 
 ```bash
-# Prepare a v0.6.1 release with one command
-./package-release.sh v0.6.1
+# Prepare a v0.7.0 release with one command
+./package-release.sh v0.7.0
 
 # Without an argument, the current version from VERSION is used
 ./package-release.sh
@@ -241,6 +245,7 @@ The source code is thoroughly commented in Russian:
 - [`src/document/search.rs`](src/document/search.rs) — search, replace, and visible-HTML search.
 - [`src/document/editor.rs`](src/document/editor.rs) — `Tab`/`Shift+Tab`, line duplication, keyboard boundaries, and cursor restoration.
 - [`src/document/gutter.rs`](src/document/gutter.rs) — line numbers.
+- [`src/document/whitespace.rs`](src/document/whitespace.rs) — whitespace and tab markers drawn over the editor.
 - [`src/document/links.rs`](src/document/links.rs) — preview link policy.
 - [`src/document/tests.rs`](src/document/tests.rs) — document tests.
 - [`src/highlighter.rs`](src/highlighter.rs) — built-in Markdown syntax highlighting for `GtkTextView` by creating and applying `GtkTextTag` (headings, bold/italic, code, links, blockquotes, lists) with palettes for each theme.
