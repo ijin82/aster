@@ -10,6 +10,18 @@ use crate::settings::AppSettings;
 
 use super::style::{apply_color_scheme, apply_editor_style_css, get_system_monospace_fonts};
 
+/// Добавляет к строке настроек компактную подсказку горячей клавиши.
+///
+/// `GtkShortcutLabel` сам рисует клавиши в стиле текущей темы и учитывает
+/// модификаторы, поэтому не нужно вручную собирать строку "Ctrl+Shift+W".
+/// Виджет добавляется как suffix: в `AdwSwitchRow` он оказывается рядом с
+/// переключателем и не мешает основной подписи и описанию.
+fn add_shortcut_hint(row: &impl IsA<adw::ActionRow>, accelerator: &str) {
+    let shortcut = gtk4::ShortcutLabel::new(accelerator);
+    shortcut.set_valign(gtk4::Align::Center);
+    row.add_suffix(&shortcut);
+}
+
 /// Окно настроек (`adw::PreferencesWindow`).
 pub(crate) fn show_preferences_dialog(
     parent: &adw::ApplicationWindow,
@@ -230,6 +242,7 @@ pub(crate) fn show_preferences_dialog(
         .subtitle(current_lang.pref_soft_wrap_subtitle())
         .active(settings.borrow().soft_wrap)
         .build();
+    add_shortcut_hint(&soft_wrap_row, "<Control><Shift>w");
 
     {
         let settings = settings.clone();
@@ -249,6 +262,7 @@ pub(crate) fn show_preferences_dialog(
         .subtitle(current_lang.pref_show_whitespace_subtitle())
         .active(settings.borrow().show_whitespace)
         .build();
+    add_shortcut_hint(&show_whitespace_row, "<Control><Shift>p");
 
     {
         let settings = settings.clone();
@@ -390,6 +404,7 @@ pub(crate) fn show_preferences_dialog(
         .subtitle(current_lang.pref_line_numbers_subtitle())
         .active(settings.borrow().show_line_numbers)
         .build();
+    add_shortcut_hint(&line_numbers_row, "<Control><Shift>l");
 
     {
         let settings = settings.clone();
