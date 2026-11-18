@@ -2,7 +2,7 @@
 # Aster installer: build, binary, SVG/PNG icons, desktop entry and uninstall.
 #
 #   ./install.sh            — interactive menu: install or uninstall
-#   ./install.sh install    — install (builds when no binary is present)
+#   ./install.sh install    — build from a source checkout and install
 #   ./install.sh rebuild    — clean rebuild and install
 #   ./install.sh lite       — install the already built binary
 #   ./install.sh shortcut   — create a desktop shortcut
@@ -30,13 +30,31 @@ ICON_SOURCE="${SCRIPT_DIR}/assets/${APP_NAME}.svg"
 TARGET_BIN="${SCRIPT_DIR}/target/release/${APP_NAME}"
 
 # A release archive ships the binary next to install.sh, while a source
-# checkout keeps it in target/release.
+# checkout keeps it in target/release. Prefer the source build in a checkout
+# so a stale file in the repository root can never shadow a fresh binary.
 binary_path() {
-    if [ -x "${SCRIPT_DIR}/${APP_NAME}" ]; then
+    if [ -f "${SCRIPT_DIR}/Cargo.toml" ]; then
+        echo "${TARGET_BIN}"
+    elif [ -x "${SCRIPT_DIR}/${APP_NAME}" ]; then
         echo "${SCRIPT_DIR}/${APP_NAME}"
     else
         echo "${TARGET_BIN}"
     fi
+}
+
+# Project version without the leading "v". VERSION is present both in a
+# source checkout and in a release archive; Cargo.toml is a fallback.
+project_version() {
+    if [ -f "${SCRIPT_DIR}/VERSION" ]; then
+        xargs < "${SCRIPT_DIR}/VERSION" | sed 's/^v//'
+    elif [ -f "${SCRIPT_DIR}/Cargo.toml" ]; then
+        sed -n 's/^version = "\(.*\)"/\1/p' "${SCRIPT_DIR}/Cargo.toml" | head -n 1
+    fi
+}
+
+# Version reported by a built binary ("aster v0.8.1" -> "0.8.1").
+binary_version() {
+    "$1" --version 2>/dev/null | awk 'NR == 1 { print $NF }' | sed 's/^v//'
 }
 
 info() {
@@ -299,17 +317,28 @@ copy_files() {
 }
 
 install_app() {
-    local bin
+    local bin expected current
     bin="$(binary_path)"
 
-    if [ -x "${bin}" ]; then
-        info "Using the prebuilt ${APP_NAME} binary (use \"./install.sh rebuild\" to rebuild)."
-        copy_files
-        return 0
+    # In a source checkout "install" must build first: otherwise an old
+    # target/release/aster can silently be installed instead of the current
+    # sources. "lite" remains available for installing a prebuilt binary.
+    if [ -f "${SCRIPT_DIR}/Cargo.toml" ]; then
+        check_deps
+        build_app
+    else
+        [ -x "${bin}" ] || die "binary not found: ${bin}"
+
+        # A release archive ships a prebuilt binary and VERSION. Verify that
+        # they agree instead of silently installing the wrong version.
+        expected="$(project_version)"
+        current="$(binary_version "${bin}")"
+        if [ -n "${expected}" ] && [ "${current}" != "${expected}" ]; then
+            die "binary version mismatch: ${current:-unknown} != ${expected}. Re-download the release archive."
+        fi
+        info "Using the release binary ${current:-}."
     fi
 
-    check_deps
-    build_app
     copy_files
 }
 
@@ -360,7 +389,7 @@ Usage: $0 [command]
 Without a command an interactive menu offers install or uninstall.
 
 Commands:
-  install     Install the application (builds it when no binary is present)
+  install     Build from a source checkout and install (or install a release archive)
   rebuild     Clean, rebuild and install from the sources
   lite        Install the already built binary without rebuilding
   shortcut    Create a shortcut on the desktop

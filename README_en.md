@@ -191,7 +191,7 @@ and can completely remove the application:
 # Interactive menu (install / rebuild / uninstall)
 ./install.sh
 
-# Install (runs cargo build --release if the binary is missing)
+# Install (rebuilds the release binary from sources, or installs the bundled release archive)
 ./install.sh install
 
 # Clean rebuild and install
