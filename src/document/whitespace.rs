@@ -75,13 +75,16 @@ fn draw_whitespace(area: &gtk4::DrawingArea, cr: &Context, text_view: &gtk4::Tex
             // Пробел в конце перенесенной строки может оказаться уже на
             // следующей строке; такие позиции пропускаем.
             if location.y() == next_location.y() {
+                // Widget, а не Text: слой лежит поверх всего TextView,
+                // включая gutter. Text-координаты не содержат его ширину,
+                // из-за чего маркеры уезжали влево на текст.
                 let (x, y) = text_view.buffer_to_window_coords(
-                    gtk4::TextWindowType::Text,
+                    gtk4::TextWindowType::Widget,
                     location.x(),
                     location.y(),
                 );
                 let (next_x, _) = text_view.buffer_to_window_coords(
-                    gtk4::TextWindowType::Text,
+                    gtk4::TextWindowType::Widget,
                     next_location.x(),
                     next_location.y(),
                 );

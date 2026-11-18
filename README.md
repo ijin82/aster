@@ -2,11 +2,11 @@
 
 ![Иконка Aster](assets/aster.svg)
 
-**Русский** · [English](README_en.md)
+**Русский** · [English](README_en.md)   
 
 **Aster** — это обучающее легковесное приложение на **Rust**, **GTK4**, **Libadwaita** и **WebKitGTK 6.0** для просмотра и редактирования Markdown-документов в стиле GNOME.
 
-[Другой файл](AGENTS.md)  
+[Другой файл](AGENTS.md)      
 
 Главная цель проекта — служить понятным практическим пособием по созданию графических Linux-приложений на Rust с соблюдением стандартов GNOME Human Interface Guidelines (HIG).
 
@@ -182,8 +182,8 @@ Python-привязки PyGObject/Rsvg. Если их нет, устанавли
 ### 4. Сборка релизного архива
 
 ```bash
-# Подготовить релиз версии v0.7.1 одной командой
-./package-release.sh v0.7.1
+# Подготовить релиз версии v0.7.2 одной командой
+./package-release.sh v0.7.2
 
 # Без аргумента используется текущая версия из VERSION
 ./package-release.sh
