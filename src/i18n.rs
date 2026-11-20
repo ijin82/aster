@@ -188,6 +188,13 @@ impl Language {
         }
     }
 
+    pub fn menu_help(&self) -> &'static str {
+        match self {
+            Language::Russian => "Справка",
+            Language::English => "Help",
+        }
+    }
+
     pub fn menu_about(&self) -> &'static str {
         match self {
             Language::Russian => "О программе",
@@ -604,6 +611,27 @@ impl Language {
         }
     }
 
+    pub fn pref_help_group_title(&self) -> &'static str {
+        match self {
+            Language::Russian => "Справка",
+            Language::English => "Help",
+        }
+    }
+
+    pub fn pref_lint_rules_title(&self) -> &'static str {
+        match self {
+            Language::Russian => "Правила проверки Markdown",
+            Language::English => "Markdown Lint Rules",
+        }
+    }
+
+    pub fn pref_lint_rules_subtitle(&self) -> &'static str {
+        match self {
+            Language::Russian => "Справочник с объяснениями и примерами",
+            Language::English => "Reference with explanations and examples",
+        }
+    }
+
     /// Описание нарушения стиля Markdown по идентификатору правила.
     ///
     /// Строки живут в i18n, а не в модуле диагностики: при смене языка
@@ -653,6 +681,85 @@ impl Language {
                 Language::Russian => "Нарушение стиля Markdown",
                 Language::English => "Markdown style violation",
             },
+        }
+    }
+
+    // --- Справка по стилю Markdown ---
+
+    pub fn lint_details(&self) -> &'static str {
+        match self {
+            Language::Russian => "Подробнее…",
+            Language::English => "Learn More…",
+        }
+    }
+
+    pub fn lint_open_docs(&self) -> &'static str {
+        match self {
+            Language::Russian => "Документация markdownlint",
+            Language::English => "markdownlint documentation",
+        }
+    }
+
+    pub fn lint_tooltip_hint(&self) -> &'static str {
+        match self {
+            Language::Russian => "ПКМ — подробнее",
+            Language::English => "Right-click for details",
+        }
+    }
+
+    pub fn lint_help_window_title(&self) -> &'static str {
+        match self {
+            Language::Russian => "Справка по стилю Markdown",
+            Language::English => "Markdown Style Help",
+        }
+    }
+
+    pub fn lint_help_all_rules(&self) -> &'static str {
+        match self {
+            Language::Russian => "Правила проверки Markdown",
+            Language::English => "Markdown Lint Rules",
+        }
+    }
+
+    pub fn lint_help_search_placeholder(&self) -> &'static str {
+        match self {
+            Language::Russian => "Поиск по номеру или описанию",
+            Language::English => "Search by number or description",
+        }
+    }
+
+    pub fn lint_help_empty(&self) -> &'static str {
+        match self {
+            Language::Russian => "Ничего не найдено",
+            Language::English => "No rules found",
+        }
+    }
+
+    pub fn lint_help_why(&self) -> &'static str {
+        match self {
+            Language::Russian => "Почему это важно",
+            Language::English => "Why it matters",
+        }
+    }
+
+    pub fn lint_help_bad(&self) -> &'static str {
+        match self {
+            Language::Russian => "Неправильно",
+            Language::English => "Incorrect",
+        }
+    }
+
+    pub fn lint_help_good(&self) -> &'static str {
+        match self {
+            Language::Russian => "Правильно",
+            Language::English => "Correct",
+        }
+    }
+
+    pub fn lint_help_legend(&self) -> &'static str {
+        match self {
+            Language::Russian => "Обозначения: · — пробел, ⇥ — табуляция, ⏎ — перевод строки.",
+            Language::English => "Legend: · — space, ⇥ — tab, ⏎ — newline.",
         }
     }
 

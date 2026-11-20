@@ -1,6 +1,8 @@
 //! Тесты документа, поиска, редактора и политики ссылок.
 
-use super::diagnostics::{apply_to_buffer, register_tags, validate, Rule, Severity};
+use super::diagnostics::{
+    apply_to_buffer, diagnostic_at, register_tags, validate, Rule, Severity,
+};
 use super::editor::{
     apply_restored_cursor_position, duplicate_current_line, indent_selection_or_cursor,
     setup_editor_key_handling, unindent_selection_or_cursor,
@@ -630,4 +632,17 @@ fn test_document_applies_and_removes_lint_tags() {
         .buffer
         .text(&doc.buffer.start_iter(), &doc.buffer.end_iter(), false);
     assert_eq!(text.as_str(), "Text   \n");
+}
+
+#[test]
+fn test_diagnostic_lookup_finds_rule_at_position() {
+    let diagnostics = validate("Text   \n");
+
+    let found = diagnostic_at(&diagnostics, 0, 5).expect("position is inside MD009");
+    assert_eq!(found.rule, Rule::Md009);
+
+    // Позиция до хвостовых пробелов не должна попадать в диагностику.
+    assert!(diagnostic_at(&diagnostics, 0, 1).is_none());
+    // Другая строка — тоже промах.
+    assert!(diagnostic_at(&diagnostics, 1, 5).is_none());
 }

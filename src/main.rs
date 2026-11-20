@@ -13,8 +13,10 @@ use std::process::{Command, Stdio};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 mod document;
+mod external;
 mod highlighter;
 mod i18n;
+mod lint_rules;
 mod recovery;
 mod renderer;
 mod settings;

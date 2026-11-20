@@ -12,6 +12,7 @@ pub(crate) fn rebuild_main_menu(menu: &gio::Menu, lang: Language) {
     menu.append(Some(lang.menu_find_replace()), Some("win.find_replace"));
     menu.append(Some(lang.menu_meditation()), Some("win.toggle_meditation"));
     menu.append(Some(lang.menu_save_as()), Some("win.save_as"));
+    menu.append(Some(lang.menu_help()), Some("win.help"));
     menu.append(Some(lang.menu_preferences()), Some("win.preferences"));
     menu.append(Some(lang.menu_about()), Some("win.about"));
     menu.append(Some(lang.menu_close_tab()), Some("win.close_tab"));

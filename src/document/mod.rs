@@ -39,6 +39,13 @@ mod tests;
 mod whitespace;
 
 use diagnostics::Diagnostic;
+pub(crate) use diagnostics::{Rule, Severity};
+
+/// Обработчик открытия справки по правилу линтера.
+///
+/// Псевдоним нужен не только для читаемости: без него Clippy считает
+/// тип поля `RefCell<Option<Rc<dyn Fn(Rule)>>>` слишком сложным.
+type LintHelpHandler = Rc<dyn Fn(Rule)>;
 use editor::{
     apply_restored_cursor_position, schedule_cursor_scroll, setup_editor_key_handling,
 };
@@ -375,6 +382,11 @@ pub struct Document {
     diagnostics: Rc<RefCell<Vec<Diagnostic>>>,
     /// Таймер отложенной проверки стиля после последней правки.
     diagnostics_timeout: Cell<Option<glib::SourceId>>,
+    /// Обработчик открытия подробной справки по правилу.
+    ///
+    /// Окно приложения устанавливает его после создания документа.
+    /// Так модель документа не зависит от окна и его диалогов.
+    lint_help_handler: RefCell<Option<LintHelpHandler>>,
     /// Текстовый буфер редактора.
     pub buffer: gtk4::TextBuffer,
     /// Виджет редактора.
@@ -670,6 +682,7 @@ impl Document {
             bulk_editing: Cell::new(false),
             diagnostics,
             diagnostics_timeout: Cell::new(None),
+            lint_help_handler: RefCell::new(None),
             buffer,
             text_view,
             editor_scroll,
@@ -837,8 +850,9 @@ impl Document {
         // 7. Политика ссылок и запрет навигации самого WebView.
         self.setup_link_policy();
 
-        // 8. Подсказки при наведении на подчёркнутые нарушения стиля.
+        // 8. Подсказки и контекстное меню для нарушений стиля.
         self.setup_diagnostic_tooltip();
+        self.setup_lint_context_menu();
     }
 
 

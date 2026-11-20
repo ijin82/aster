@@ -22,6 +22,7 @@ use crate::settings::AppSettings;
 
 mod actions;
 mod dialogs;
+mod lint_help;
 mod menus;
 mod preferences;
 mod session;
@@ -30,6 +31,7 @@ mod tabs;
 
 use actions::{install_actions, ActionContext};
 use dialogs::{save_document, save_documents_sequentially, show_unsaved_changes_dialog};
+use lint_help::show_lint_help_window;
 use menus::{rebuild_main_menu, rebuild_tab_menu};
 use style::{apply_color_scheme, apply_editor_style_css, disable_sound_feedback};
 use tabs::{active_document, parent_directory};
@@ -270,6 +272,8 @@ pub fn build_window(
         let search_btn = search_btn.clone();
         let show_toast = show_toast.clone();
         let settings_for_error = settings.clone();
+        // Слабые ссылки: справка не должна удерживать окно после закрытия.
+        let window_for_help = window.downgrade();
         let last_open_directory = last_open_directory.clone();
         let toast_overlay_for_file = toast_overlay.clone();
         let docs_for_recovery = Rc::downgrade(&docs);
@@ -308,6 +312,21 @@ pub fn build_window(
             let page = tab_view.append(&doc.root);
             *doc.tab_page.borrow_mut() = Some(page.clone());
             doc.update_tab_title();
+
+            // ПКМ по диагностике открывает справку на нужном правиле.
+            // Документ хранит только callback и ничего не знает об окне.
+            {
+                let window_for_help = window_for_help.clone();
+                let settings_for_help = settings.clone();
+                doc.set_lint_help_handler(Rc::new(move |rule| {
+                    let Some(window) = window_for_help.upgrade() else {
+                        return;
+                    };
+                    let lang =
+                        Language::from_code(&settings_for_help.borrow().language);
+                    show_lint_help_window(&window, lang, Some(rule));
+                }));
+            }
 
             // Следим за изменениями файла на диске. Слабые ссылки на
             // callbacks окна нужны, чтобы Document не удерживал docs и
@@ -1049,6 +1068,7 @@ pub fn build_window(
     app.set_accels_for_action("win.find", &["<Control>f"]);
     app.set_accels_for_action("win.find_replace", &["<Control>r"]);
     app.set_accels_for_action("win.preferences", &["<Control>comma"]);
+    app.set_accels_for_action("win.help", &["F1"]);
     app.set_accels_for_action("win.close", &["<Control>q", "<Control>F4"]);
 
     window
