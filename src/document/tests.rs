@@ -1,5 +1,6 @@
 //! Тесты документа, поиска, редактора и политики ссылок.
 
+use super::diagnostics::{apply_to_buffer, register_tags, validate, Rule, Severity};
 use super::editor::{
     apply_restored_cursor_position, duplicate_current_line, indent_selection_or_cursor,
     setup_editor_key_handling, unindent_selection_or_cursor,
@@ -139,7 +140,8 @@ use super::*;
 
         // Держим gutter отдельно: если draw-функция захватит TextView
         // сильной ссылкой, цикл не даст TextView освободиться.
-        let _gutter = setup_line_numbers_gutter(&text_view, &settings);
+        let diagnostics = Rc::new(RefCell::new(Vec::new()));
+        let _gutter = setup_line_numbers_gutter(&text_view, &settings, &diagnostics);
 
         drop(text_view);
         assert!(
@@ -432,3 +434,200 @@ use super::*;
         doc.buffer.set_text("# Title\n\nChanged body");
         assert!(doc.refresh_preview());
     }
+
+// --- Проверка стиля Markdown ---
+//
+// Правила проверяются на чистом тексте, без GTK: `validate` не зависит от
+// виджетов, поэтому тесты быстрые и не требуют графической сессии.
+
+#[test]
+fn test_lint_clean_document_has_no_diagnostics() {
+    let text = "# Title\n\nText with a hard break  \n\n## Section\n\n```rust\nfn main() {}\n```\n\n- item\n- item\n\nEnd.\n";
+    assert!(
+        validate(text).is_empty(),
+        "clean document produced diagnostics: {:?}",
+        validate(text)
+    );
+}
+
+#[test]
+fn test_lint_md009_allows_two_trailing_spaces() {
+    let diagnostics = validate("Text \nText  \nText   \n");
+    let md009: Vec<_> = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.rule == Rule::Md009)
+        .collect();
+
+    assert_eq!(md009.len(), 2, "only one and three spaces are violations");
+    assert_eq!(md009[0].line, 0);
+    assert_eq!(md009[1].line, 2);
+    assert_eq!(md009[1].start_col, 4);
+    assert_eq!(md009[1].end_col, 7);
+}
+
+#[test]
+fn test_lint_columns_are_characters_for_cyrillic() {
+    let diagnostics = validate("Привет   \n");
+    assert_eq!(diagnostics.len(), 1);
+    let diagnostic = &diagnostics[0];
+
+    // «Привет» — 6 символов, хотя в UTF-8 это 12 байт.
+    assert_eq!(diagnostic.rule, Rule::Md009);
+    assert_eq!(diagnostic.start_col, 6);
+    assert_eq!(diagnostic.end_col, 9);
+}
+
+#[test]
+fn test_lint_md010_ignores_tabs_in_code_blocks() {
+    let diagnostics = validate("a\tb\n\n```rust\n\tcode\n```\n");
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].rule, Rule::Md010);
+    assert_eq!(diagnostics[0].line, 0);
+    assert_eq!(diagnostics[0].start_col, 1);
+}
+
+#[test]
+fn test_lint_md012_multiple_blank_lines() {
+    let diagnostics = validate("a\n\n\nb\n");
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].rule, Rule::Md012);
+    assert_eq!(diagnostics[0].line, 2);
+    assert_eq!(diagnostics[0].start_col, diagnostics[0].end_col);
+}
+
+#[test]
+fn test_lint_md022_headings_need_blank_lines() {
+    let diagnostics = validate("# Title\nText\n## Section\n");
+    let md022: Vec<_> = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.rule == Rule::Md022)
+        .collect();
+
+    assert_eq!(md022.len(), 2);
+    assert_eq!(md022[0].line, 0);
+    assert_eq!(md022[1].line, 2);
+}
+
+#[test]
+fn test_lint_md025_reports_second_h1_as_error() {
+    let diagnostics = validate("# One\n\n# Two\n");
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].rule, Rule::Md025);
+    assert_eq!(diagnostics[0].severity, Severity::Error);
+    assert_eq!(diagnostics[0].line, 2);
+}
+
+#[test]
+fn test_lint_md031_fences_need_blank_lines() {
+    let diagnostics = validate("Text\n```rust\ncode\n```\nText\n");
+    let md031: Vec<_> = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.rule == Rule::Md031)
+        .collect();
+
+    assert_eq!(md031.len(), 2);
+    assert_eq!(md031[0].line, 1);
+    assert_eq!(md031[1].line, 3);
+}
+
+#[test]
+fn test_lint_md040_fence_without_language() {
+    let diagnostics = validate("```\ncode\n```\n");
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].rule, Rule::Md040);
+    assert_eq!(diagnostics[0].line, 0);
+}
+
+#[test]
+fn test_lint_md032_lists_need_blank_lines() {
+    let diagnostics = validate("Text\n- item\n- item\nText\n");
+    let md032: Vec<_> = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.rule == Rule::Md032)
+        .collect();
+
+    assert_eq!(md032.len(), 2);
+    assert_eq!(md032[0].line, 1);
+    assert_eq!(md032[1].line, 2);
+}
+
+#[test]
+fn test_lint_md047_requires_single_final_newline() {
+    let missing = validate("Text");
+    assert_eq!(missing.len(), 1);
+    assert_eq!(missing[0].rule, Rule::Md047);
+    assert_eq!(missing[0].line, 0);
+
+    // Два перевода строки — это и лишняя пустая строка, и неверное
+    // завершение файла; оба правила честно срабатывают.
+    let extra = validate("Text\n\n");
+    assert!(extra.iter().any(|diagnostic| diagnostic.rule == Rule::Md047));
+    assert!(extra.iter().any(|diagnostic| diagnostic.rule == Rule::Md012));
+}
+
+#[test]
+fn test_lint_ignores_markdown_inside_code_blocks() {
+    let diagnostics = validate("```md\n# Not a heading\n\n\n\n```\n");
+    assert!(
+        diagnostics.is_empty(),
+        "code block content was linted: {:?}",
+        diagnostics
+    );
+}
+
+#[gtk4::test]
+fn test_lint_tags_use_character_columns() {
+    let tag_table = gtk4::TextTagTable::new();
+    register_tags(&tag_table);
+
+    let buffer = gtk4::TextBuffer::builder()
+        .tag_table(&tag_table)
+        .build();
+    buffer.set_text("Привет   \n");
+
+    let diagnostics = validate("Привет   \n");
+    apply_to_buffer(&buffer, &diagnostics);
+
+    let warning_tag = tag_table
+        .lookup("lint-warning")
+        .expect("warning tag is registered");
+
+    // Третий пробел находится на 8-й позиции в символах. Если бы теги
+    // ставились по байтовым offset'ам, диапазон оказался бы за концом
+    // строки и подчёркивания не было бы.
+    let inside = buffer.iter_at_line_offset(0, 8).expect("inside line");
+    assert!(inside.has_tag(&warning_tag));
+
+    let before = buffer.iter_at_line_offset(0, 5).expect("inside line");
+    assert!(!before.has_tag(&warning_tag));
+}
+
+
+#[gtk4::test]
+fn test_document_applies_and_removes_lint_tags() {
+    let settings = Rc::new(RefCell::new(AppSettings::default()));
+    let doc = Document::new(settings, None, false).expect("create document");
+
+    // restore_draft имитирует восстановление черновика и сразу запускает
+    // проверку, не дожидаясь дебаунса.
+    doc.restore_draft("Text   \n", 0, 0);
+    assert_eq!(doc.diagnostics.borrow().len(), 1);
+
+    let tag = doc
+        .tag_table
+        .lookup("lint-warning")
+        .expect("warning tag is registered");
+    let inside = doc.buffer.iter_at_line_offset(0, 5).expect("inside line");
+    assert!(inside.has_tag(&tag));
+
+    // Выключение настройки должно снять подчёркивания, но не тронуть текст.
+    doc.settings.borrow_mut().markdown_lint = false;
+    doc.apply_markdown_lint_setting();
+
+    assert!(doc.diagnostics.borrow().is_empty());
+    assert!(!inside.has_tag(&tag));
+    let text = doc
+        .buffer
+        .text(&doc.buffer.start_iter(), &doc.buffer.end_iter(), false);
+    assert_eq!(text.as_str(), "Text   \n");
+}

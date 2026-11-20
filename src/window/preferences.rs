@@ -381,6 +381,28 @@ pub(crate) fn show_preferences_dialog(
     }
     editor_group.add(&line_numbers_row);
 
+    // Проверка стиля Markdown — свойство редактора, а не отдельного
+    // документа, поэтому настройка глобальная и применяется ко всем
+    // открытым вкладкам сразу.
+    let markdown_lint_row = adw::SwitchRow::builder()
+        .title(current_lang.pref_markdown_lint_title())
+        .subtitle(current_lang.pref_markdown_lint_subtitle())
+        .active(settings.borrow().markdown_lint)
+        .build();
+
+    {
+        let settings = settings.clone();
+        let docs = docs.clone();
+        markdown_lint_row.connect_active_notify(move |row| {
+            settings.borrow_mut().markdown_lint = row.is_active();
+            settings.borrow().save();
+            for doc in docs.borrow().iter() {
+                doc.apply_markdown_lint_setting();
+            }
+        });
+    }
+    editor_group.add(&markdown_lint_row);
+
     page.add(&editor_group);
 
     // --- Шрифты ---

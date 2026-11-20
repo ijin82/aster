@@ -29,6 +29,7 @@ use crate::i18n::Language;
 use crate::renderer;
 use crate::settings::{AppSettings, FileViewState};
 
+mod diagnostics;
 mod editor;
 mod gutter;
 mod links;
@@ -37,6 +38,7 @@ mod search;
 mod tests;
 mod whitespace;
 
+use diagnostics::Diagnostic;
 use editor::{
     apply_restored_cursor_position, schedule_cursor_scroll, setup_editor_key_handling,
 };
@@ -366,6 +368,13 @@ pub struct Document {
     /// Режим массовой правки: тяжёлая подсветка и поиск откладываются
     /// до окончания серии изменений буфера.
     bulk_editing: Cell<bool>,
+    /// Найденные нарушения стиля Markdown.
+    ///
+    /// Список общий с gutter: колонка номеров строк рисует по нему цветные
+    /// маркеры, в том числе для пустых строк, которые нельзя подчеркнуть.
+    diagnostics: Rc<RefCell<Vec<Diagnostic>>>,
+    /// Таймер отложенной проверки стиля после последней правки.
+    diagnostics_timeout: Cell<Option<glib::SourceId>>,
     /// Текстовый буфер редактора.
     pub buffer: gtk4::TextBuffer,
     /// Виджет редактора.
@@ -431,6 +440,11 @@ impl Document {
             style_mgr.is_dark(),
         );
 
+        // Теги диагностики живут в той же таблице, что и подсветка
+        // синтаксиса, но применяются отдельно: линтер не конфликтует
+        // с `md-*` и может быть выключен без пересоздания буфера.
+        diagnostics::register_tags(&tag_table);
+
         let buffer = gtk4::TextBuffer::builder()
             .tag_table(&tag_table)
             .enable_undo(true)
@@ -445,7 +459,11 @@ impl Document {
             .build();
         text_view.add_css_class("editor-view");
 
-        let gutter = setup_line_numbers_gutter(&text_view, &settings);
+        // Список диагностик создаётся до gutter: колонка номеров строк
+        // получает его копию и рисует маркеры найденных проблем.
+        let diagnostics = Rc::new(RefCell::new(Vec::new()));
+
+        let gutter = setup_line_numbers_gutter(&text_view, &settings, &diagnostics);
         let editor_scroll = gtk4::ScrolledWindow::builder()
             .child(&text_view)
             .hexpand(true)
@@ -650,6 +668,8 @@ impl Document {
             preview_search_index: Cell::new(0),
             preview_search_generation: Cell::new(0),
             bulk_editing: Cell::new(false),
+            diagnostics,
+            diagnostics_timeout: Cell::new(None),
             buffer,
             text_view,
             editor_scroll,
@@ -716,6 +736,11 @@ impl Document {
                 doc.gutter.queue_draw();
                 doc.whitespace_area.queue_draw();
                 highlighter::highlight_markdown_buffer(buf);
+
+                // Проверку стиля не запускаем на каждое нажатие: она
+                // выполнится один раз после короткой паузы в наборе.
+                doc.schedule_diagnostics();
+
                 if !doc.suppress_search_refresh.get() {
                     doc.refresh_search_matches(false);
                 }
@@ -811,6 +836,9 @@ impl Document {
 
         // 7. Политика ссылок и запрет навигации самого WebView.
         self.setup_link_policy();
+
+        // 8. Подсказки при наведении на подчёркнутые нарушения стиля.
+        self.setup_diagnostic_tooltip();
     }
 
 
@@ -834,6 +862,9 @@ impl Document {
         self.buffer.set_text(&content);
         self.bulk_editing.set(false);
         highlighter::highlight_markdown_buffer(&self.buffer);
+        // Файл загружен целиком — проверяем стиль сразу, не дожидаясь
+        // дебаунса: пользователь должен увидеть проблемы при открытии.
+        self.refresh_diagnostics();
         *self.current_file.borrow_mut() = Some(path.to_path_buf());
         self.is_modified.set(false);
 
@@ -1214,6 +1245,9 @@ impl Document {
         self.buffer.set_text(&content);
         self.bulk_editing.set(false);
         highlighter::highlight_markdown_buffer(&self.buffer);
+        // Внешнее изменение уже применилось к буферу — сразу обновляем
+        // диагностику, чтобы подчёркивания не отставали от текста.
+        self.refresh_diagnostics();
 
         let line_count = self.buffer.line_count();
         let target_line = cursor_line.min(line_count.saturating_sub(1)).max(0);
@@ -1245,6 +1279,8 @@ impl Document {
         self.buffer.set_text(content);
         self.bulk_editing.set(false);
         highlighter::highlight_markdown_buffer(&self.buffer);
+        // Черновик восстановлен целиком: проверяем его сразу.
+        self.refresh_diagnostics();
 
         let line_count = self.buffer.line_count();
         let target_line = (line as i32).min(line_count.saturating_sub(1)).max(0);

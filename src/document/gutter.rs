@@ -6,13 +6,20 @@ use std::rc::Rc;
 
 use crate::settings::AppSettings;
 
+use super::diagnostics::{Diagnostic, Severity};
+
 /// Настраивает колонку с номерами строк (Gutter).
 ///
 /// Использует `GtkDrawingArea` и Cairo. Цвета и шрифт берутся из общих
 /// настроек, поэтому при смене темы достаточно вызвать `queue_draw`.
+///
+/// Дополнительно gutter рисует цветную полосу у строк с диагностикой:
+/// пустые строки (MD012, MD047) нельзя подчеркнуть в тексте, и без
+/// маркера пользователь не увидел бы о них предупреждение.
 pub(super) fn setup_line_numbers_gutter(
     text_view: &gtk4::TextView,
     settings: &Rc<RefCell<AppSettings>>,
+    diagnostics: &Rc<RefCell<Vec<Diagnostic>>>,
 ) -> gtk4::DrawingArea {
     let gutter = gtk4::DrawingArea::new();
     gutter.set_content_width(48);
@@ -21,6 +28,7 @@ pub(super) fn setup_line_numbers_gutter(
     // Иначе каждая закрытая вкладка навсегда удерживала бы свой TextView.
     let text_view_weak = text_view.downgrade();
     let settings_for_draw = settings.clone();
+    let diagnostics_for_draw = diagnostics.clone();
 
     gutter.set_draw_func(move |area, cr, width, height| {
         let Some(text_view) = text_view_weak.upgrade() else {
@@ -29,6 +37,7 @@ pub(super) fn setup_line_numbers_gutter(
 
         let buffer = text_view.buffer();
         let total_lines = buffer.line_count();
+        let diagnostics = diagnostics_for_draw.borrow();
 
         let settings = settings_for_draw.borrow();
         let theme = settings.theme.clone();
@@ -113,6 +122,36 @@ pub(super) fn setup_line_numbers_gutter(
             // Высота одного визуального ряда, а не всей логической строки:
             // номер должен стоять у первой строки перенесенного текста.
             let visual_line_height = text_view.iter_location(&iter).height().max(1) as f64;
+
+            // Цветная полоса слева от номера показывает строки с
+            // диагностикой. Красный цвет — ошибка, янтарный — нарушение
+            // стиля. Полоса не перекрывает цифры и не требует менять
+            // ширину gutter.
+            let line_index = iter.line();
+            let has_error = diagnostics
+                .iter()
+                .any(|d| d.line == line_index && d.severity == Severity::Error);
+            let has_warning = !has_error
+                && diagnostics
+                    .iter()
+                    .any(|d| d.line == line_index && d.severity == Severity::Warning);
+
+            if has_error || has_warning {
+                let (r, g, b) = if has_error {
+                    (0.90, 0.20, 0.20)
+                } else {
+                    (0.82, 0.55, 0.05)
+                };
+                cr.set_source_rgba(r, g, b, 0.9);
+                cr.rectangle(
+                    0.0,
+                    win_y as f64 + 2.0,
+                    3.0,
+                    (visual_line_height - 4.0).max(2.0),
+                );
+                let _ = cr.fill();
+                cr.set_source_rgb(num_r, num_g, num_b);
+            }
 
             if let Ok(extents) = cr.text_extents(&num_str) {
                 let x = (width as f64) - 8.0 - extents.width() - extents.x_bearing();

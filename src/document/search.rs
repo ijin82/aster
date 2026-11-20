@@ -238,9 +238,13 @@ impl Document {
     }
 
     /// Завершает серию правок и один раз обновляет тяжёлые представления.
-    fn end_bulk_edit(&self) {
+    ///
+    /// Принимает `&Rc<Self>`, потому что для планирования отложенной
+    /// проверки стиля нужен разделяемый владелец документа.
+    fn end_bulk_edit(self: &Rc<Self>) {
         self.bulk_editing.set(false);
         highlighter::highlight_markdown_buffer(&self.buffer);
+        self.schedule_diagnostics();
         self.gutter.queue_draw();
         self.update_tab_title();
     }
