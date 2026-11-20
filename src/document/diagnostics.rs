@@ -8,7 +8,7 @@
 //! - может быть полностью выключен без изменения документа.
 //!
 //! Реализованные правила: MD007, MD009, MD010, MD012, MD018–MD026,
-//! MD029–MD032, MD040, MD042, MD045 и MD047. Это подмножество `markdownlint`, которое не
+//! MD029–MD032, MD040, MD042, MD045, MD047, MD055, MD056 и MD060. Это подмножество `markdownlint`, которое не
 //! требует конфигурации и не даёт спорных предупреждений о вкусе разметки.
 //!
 //! # Почему колонки считаются в символах, а не в байтах
@@ -111,6 +111,12 @@ pub(super) enum Rule {
     Md045,
     /// MD047 — файл не заканчивается одним переводом строки.
     Md047,
+    /// MD055 — непостоянный стиль pipe-символов в таблицах.
+    Md055,
+    /// MD056 — неверное число колонок в строке таблицы.
+    Md056,
+    /// MD060 — непостоянный стиль колонок таблицы.
+    Md060,
 }
 
 impl Rule {
@@ -138,6 +144,9 @@ impl Rule {
             Rule::Md042 => "MD042",
             Rule::Md045 => "MD045",
             Rule::Md047 => "MD047",
+            Rule::Md055 => "MD055",
+            Rule::Md056 => "MD056",
+            Rule::Md060 => "MD060",
         }
     }
 
@@ -179,6 +188,9 @@ impl Rule {
             Rule::Md042 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md042.md",
             Rule::Md045 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md045.md",
             Rule::Md047 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md047.md",
+            Rule::Md055 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md055.md",
+            Rule::Md056 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md056.md",
+            Rule::Md060 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md060.md",
         }
     }
 
@@ -981,6 +993,9 @@ pub(super) fn validate(text: &str) -> Vec<Diagnostic> {
     // --- MD042 и MD045: ссылки и изображения ---
     check_link_and_image_rules(text, &mut result);
 
+    // --- MD055, MD056 и MD060: таблицы ---
+    check_table_rules(&lines, &is_code, &mut result);
+
     // --- MD007, MD029 и MD030: списки ---
     check_list_rules(&lines, &is_code, &mut result);
 
@@ -1589,4 +1604,245 @@ fn position_at(text: &str, byte_offset: usize) -> (i32, i32) {
     let line_start = before.rfind('\n').map_or(0, |index| index + 1);
     let column = before[line_start..].chars().count() as i32;
     (line, column)
+}
+
+/// Разобранная строка таблицы.
+struct TableRow {
+    line: usize,
+    leading_pipe: bool,
+    trailing_pipe: bool,
+    /// Содержимое ячеек между pipe-символами, без внешних разделителей.
+    cells: Vec<String>,
+    /// Позиции pipe-символов внутри обрезанной строки (в символах).
+    pipes: Vec<usize>,
+}
+
+/// Проверяет стиль и структуру GFM-таблиц.
+///
+/// Таблица определяется по паре «строка заголовка + разделитель». Дальше
+/// строки идут до пустой строки или начала другого блока. Текст сразу
+/// после таблицы без пустой строки по правилам GFM считается её частью,
+/// поэтому такие строки тоже проверяются.
+fn check_table_rules(lines: &[&str], is_code: &[bool], result: &mut Vec<Diagnostic>) {
+    // Стиль первой таблицы в документе, который должен сохраняться
+    // во всех последующих таблицах (MD055, default `consistent`).
+    let mut document_pipe_style: Option<(bool, bool)> = None;
+    let mut index = 0;
+
+    while index + 1 < lines.len() {
+        if is_code[index] || is_code[index + 1] {
+            index += 1;
+            continue;
+        }
+
+        let Some(header) = parse_table_row(lines[index], index) else {
+            index += 1;
+            continue;
+        };
+        let Some(delimiter) = parse_table_row(lines[index + 1], index + 1) else {
+            index += 1;
+            continue;
+        };
+
+        if !is_delimiter_row(&delimiter) || header.cells.len() != delimiter.cells.len() {
+            index += 1;
+            continue;
+        }
+
+        let mut body: Vec<TableRow> = Vec::new();
+        let mut end = index + 2;
+        while end < lines.len() {
+            if lines[end].trim().is_empty() || is_code[end] || starts_new_block(lines[end]) {
+                break;
+            }
+
+            if let Some(row) = parse_table_row(lines[end], end) {
+                body.push(row);
+            } else {
+                // Текст без pipe-символов — всё ещё часть таблицы по GFM.
+                body.push(TableRow {
+                    line: end,
+                    leading_pipe: false,
+                    trailing_pipe: false,
+                    cells: vec![lines[end].trim().to_string()],
+                    pipes: Vec::new(),
+                });
+            }
+            end += 1;
+        }
+
+        let style = (header.leading_pipe, header.trailing_pipe);
+        document_pipe_style.get_or_insert(style);
+
+        let expected_columns = header.cells.len();
+        let mut rows: Vec<&TableRow> = Vec::with_capacity(2 + body.len());
+        rows.push(&header);
+        rows.push(&delimiter);
+        rows.extend(body.iter());
+
+        for row in &rows {
+            // MD055: единый стиль ведущих и замыкающих pipe.
+            if let Some(expected_style) = document_pipe_style {
+                if (row.leading_pipe, row.trailing_pipe) != expected_style {
+                    result.push(Diagnostic::new(
+                        Rule::Md055,
+                        row.line,
+                        0,
+                        char_len(lines[row.line]).max(1),
+                    ));
+                }
+            }
+
+            // MD056: число колонок должно совпадать с заголовком.
+            if row.cells.len() != expected_columns {
+                result.push(Diagnostic::new(
+                    Rule::Md056,
+                    row.line,
+                    0,
+                    char_len(lines[row.line]).max(1),
+                ));
+            }
+        }
+
+        // MD060: таблица должна соответствовать хотя бы одному стилю —
+        // выровненному, компактному или плотному. Иначе сообщаем один
+        // раз на строке заголовка, а не на каждой ячейке.
+        if !table_matches_aligned(&rows)
+            && !table_matches_compact(&rows)
+            && !table_matches_tight(&rows)
+        {
+            result.push(Diagnostic::new(
+                Rule::Md060,
+                header.line,
+                0,
+                char_len(lines[header.line]).max(1),
+            ));
+        }
+
+        index = end;
+    }
+}
+
+/// Разбирает строку таблицы, сохраняя внешние pipe-признаки и ячейки.
+fn parse_table_row(line: &str, line_index: usize) -> Option<TableRow> {
+    let trimmed = line.trim();
+    if !trimmed.contains('|') {
+        return None;
+    }
+
+    let mut segments: Vec<String> = Vec::new();
+    let mut pipes: Vec<usize> = Vec::new();
+    let mut current = String::new();
+    let mut escaped = false;
+
+    for (char_index, ch) in trimmed.chars().enumerate() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+        } else if ch == '\\' {
+            current.push(ch);
+            escaped = true;
+        } else if ch == '|' {
+            segments.push(std::mem::take(&mut current));
+            pipes.push(char_index);
+        } else {
+            current.push(ch);
+        }
+    }
+    segments.push(current);
+
+    let leading_pipe = segments.first().is_some_and(String::is_empty);
+    let trailing_pipe = segments.last().is_some_and(String::is_empty);
+
+    if leading_pipe {
+        segments.remove(0);
+    }
+    if trailing_pipe {
+        segments.pop();
+    }
+
+    if segments.is_empty() {
+        return None;
+    }
+
+    Some(TableRow {
+        line: line_index,
+        leading_pipe,
+        trailing_pipe,
+        cells: segments,
+        pipes,
+    })
+}
+
+/// Проверяет, что все ячейки разделителя выглядят как `---`, `:---` и т.п.
+fn is_delimiter_row(row: &TableRow) -> bool {
+    !row.cells.is_empty()
+        && row.cells.iter().all(|cell| {
+            let trimmed = cell.trim();
+            let without_left = trimmed.strip_prefix(':').unwrap_or(trimmed);
+            let without_both = without_left.strip_suffix(':').unwrap_or(without_left);
+            !without_both.is_empty() && without_both.chars().all(|ch| ch == '-')
+        })
+}
+
+/// Строка начинает новый блок и поэтому завершает таблицу.
+fn starts_new_block(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with('#')
+        || trimmed.starts_with('>')
+        || trimmed.starts_with("```")
+        || trimmed.starts_with("~~~")
+        || parse_list_item(line).is_some()
+}
+
+/// Проверяет стиль «выровненные pipe-символы».
+fn table_matches_aligned(rows: &[&TableRow]) -> bool {
+    let Some(first) = rows.first() else {
+        return false;
+    };
+    !first.pipes.is_empty() && rows.iter().all(|row| row.pipes == first.pipes)
+}
+
+/// Проверяет стиль «один пробел вокруг содержимого каждой ячейки».
+fn table_matches_compact(rows: &[&TableRow]) -> bool {
+    rows.iter().all(|row| {
+        let cell_count = row.cells.len();
+        row.cells.iter().enumerate().all(|(index, cell)| {
+            let need_left = row.leading_pipe || index > 0;
+            let need_right = row.trailing_pipe || index + 1 < cell_count;
+            let content = cell.trim();
+
+            if content.is_empty() {
+                // Пустая ячейка в компактном стиле — ровно один пробел,
+                // если хотя бы с одной стороны есть pipe.
+                return if need_left || need_right {
+                    cell == " "
+                } else {
+                    cell.is_empty()
+                };
+            }
+
+            let mut core = cell.as_str();
+            if need_left {
+                let Some(stripped) = core.strip_prefix(' ') else {
+                    return false;
+                };
+                core = stripped;
+            }
+            if need_right {
+                let Some(stripped) = core.strip_suffix(' ') else {
+                    return false;
+                };
+                core = stripped;
+            }
+
+            core == content
+        })
+    })
+}
+
+/// Проверяет плотный стиль: вокруг содержимого ячеек нет пробелов.
+fn table_matches_tight(rows: &[&TableRow]) -> bool {
+    rows.iter()
+        .all(|row| row.cells.iter().all(|cell| cell.trim() == cell.as_str()))
 }

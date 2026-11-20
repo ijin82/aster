@@ -863,3 +863,54 @@ fn test_lint_link_and_image_rules() {
         .iter()
         .any(|d| matches!(d.rule, Rule::Md042 | Rule::Md045)));
 }
+
+#[test]
+fn test_lint_table_rules() {
+    // MD055 — строка выбивается из стиля pipe-символов.
+    let diagnostics = validate("| A | B |\n| --- | --- |\nA | B\n");
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|d| d.rule == Rule::Md055)
+            .count(),
+        1
+    );
+
+    // MD056 — неверное число колонок в двух строках.
+    let diagnostics = validate("| A | B |\n| --- | --- |\n| 1 |\n| 2 | 3 | 4 |\n");
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|d| d.rule == Rule::Md056)
+            .count(),
+        2
+    );
+
+    // MD060 — смешаны плотный заголовок с компактными строками.
+    assert!(validate("|A|B|\n| --- | --- |\n| 1 | 2 |\n")
+        .iter()
+        .any(|d| d.rule == Rule::Md060));
+
+    // Каждый из поддерживаемых стилей по отдельности корректен.
+    assert!(!validate("|A|B|\n|---|---|\n|1|2|\n")
+        .iter()
+        .any(|d| d.rule == Rule::Md060));
+    assert!(!validate("| A | B |\n| --- | --- |\n| 1 | 2 |\n")
+        .iter()
+        .any(|d| d.rule == Rule::Md060));
+    assert!(!validate(
+        "| Character | Meaning |\n| --------- | ------- |\n| Y         | Yes     |\n"
+    )
+    .iter()
+    .any(|d| d.rule == Rule::Md060));
+
+    // Текст сразу после таблицы считается её частью.
+    let diagnostics = validate("| A | B |\n| --- | --- |\n| 1 | 2 |\nText\n");
+    assert!(diagnostics.iter().any(|d| d.rule == Rule::Md055));
+    assert!(diagnostics.iter().any(|d| d.rule == Rule::Md056));
+
+    // Внутри блока кода таблицы не проверяются.
+    assert!(!validate("```md\n|A|B|\n| --- | --- |\n```\n")
+        .iter()
+        .any(|d| matches!(d.rule, Rule::Md055 | Rule::Md056 | Rule::Md060)));
+}

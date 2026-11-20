@@ -692,6 +692,18 @@ impl Language {
                 Language::Russian => "Файл должен заканчиваться одним переводом строки",
                 Language::English => "Files should end with a single newline character",
             },
+            "MD055" => match self {
+                Language::Russian => "Непостоянный стиль pipe-символов в таблицах",
+                Language::English => "Table pipe style",
+            },
+            "MD056" => match self {
+                Language::Russian => "Неверное число колонок в строке таблицы",
+                Language::English => "Table column count",
+            },
+            "MD060" => match self {
+                Language::Russian => "Непостоянный стиль колонок таблицы",
+                Language::English => "Table column style",
+            },
             _ => match self {
                 Language::Russian => "Нарушение стиля Markdown",
                 Language::English => "Markdown style violation",
