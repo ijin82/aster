@@ -820,3 +820,46 @@ fn test_lint_list_rules() {
         .iter()
         .any(|d| d.rule == Rule::Md030));
 }
+
+#[test]
+fn test_lint_link_and_image_rules() {
+    // MD042 — пустая ссылка.
+    assert!(validate("[empty]()\n")
+        .iter()
+        .any(|d| d.rule == Rule::Md042));
+    assert!(validate("[empty](#)\n")
+        .iter()
+        .any(|d| d.rule == Rule::Md042));
+
+    // Обычные ссылки и непустые якоря корректны.
+    assert!(!validate("[ok](https://example.com)\n")
+        .iter()
+        .any(|d| d.rule == Rule::Md042));
+    assert!(!validate("[ok](#fragment)\n")
+        .iter()
+        .any(|d| d.rule == Rule::Md042));
+
+    // MD042 через пустое reference-определение.
+    assert!(validate("[empty][ref]\n\n[ref]: #\n")
+        .iter()
+        .any(|d| d.rule == Rule::Md042));
+
+    // MD045 — изображение без alt-текста.
+    assert!(validate("![](image.png)\n")
+        .iter()
+        .any(|d| d.rule == Rule::Md045));
+    assert!(validate("![ ](image.png)\n")
+        .iter()
+        .any(|d| d.rule == Rule::Md045));
+    assert!(!validate("![alt](image.png)\n")
+        .iter()
+        .any(|d| d.rule == Rule::Md045));
+    assert!(!validate("![**bold**](image.png)\n")
+        .iter()
+        .any(|d| d.rule == Rule::Md045));
+
+    // Внутри блока кода ссылки и изображения не проверяются.
+    assert!(!validate("```md\n![](image.png)\n[empty]()\n```\n")
+        .iter()
+        .any(|d| matches!(d.rule, Rule::Md042 | Rule::Md045)));
+}

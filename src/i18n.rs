@@ -680,6 +680,14 @@ impl Language {
                 Language::Russian => "У блока кода не указан язык",
                 Language::English => "Fenced code blocks should have a language specified",
             },
+            "MD042" => match self {
+                Language::Russian => "Ссылка без адреса",
+                Language::English => "No empty links",
+            },
+            "MD045" => match self {
+                Language::Russian => "У изображения нет альтернативного текста",
+                Language::English => "Images should have alternate text",
+            },
             "MD047" => match self {
                 Language::Russian => "Файл должен заканчиваться одним переводом строки",
                 Language::English => "Files should end with a single newline character",

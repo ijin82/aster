@@ -8,7 +8,7 @@
 //! - может быть полностью выключен без изменения документа.
 //!
 //! Реализованные правила: MD007, MD009, MD010, MD012, MD018–MD026,
-//! MD029–MD032, MD040 и MD047. Это подмножество `markdownlint`, которое не
+//! MD029–MD032, MD040, MD042, MD045 и MD047. Это подмножество `markdownlint`, которое не
 //! требует конфигурации и не даёт спорных предупреждений о вкусе разметки.
 //!
 //! # Почему колонки считаются в символах, а не в байтах
@@ -22,8 +22,10 @@
 
 use gtk4::prelude::*;
 use gtk4::{gdk, glib, pango};
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use std::cell::Cell;
 use std::collections::HashSet;
+use std::ops::Range;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -103,6 +105,10 @@ pub(super) enum Rule {
     Md032,
     /// MD040 — у блока кода не указан язык.
     Md040,
+    /// MD042 — ссылка без адреса.
+    Md042,
+    /// MD045 — у изображения нет альтернативного текста.
+    Md045,
     /// MD047 — файл не заканчивается одним переводом строки.
     Md047,
 }
@@ -129,6 +135,8 @@ impl Rule {
             Rule::Md031 => "MD031",
             Rule::Md032 => "MD032",
             Rule::Md040 => "MD040",
+            Rule::Md042 => "MD042",
+            Rule::Md045 => "MD045",
             Rule::Md047 => "MD047",
         }
     }
@@ -168,6 +176,8 @@ impl Rule {
             Rule::Md031 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md031.md",
             Rule::Md032 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md032.md",
             Rule::Md040 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md040.md",
+            Rule::Md042 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md042.md",
+            Rule::Md045 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md045.md",
             Rule::Md047 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md047.md",
         }
     }
@@ -968,6 +978,9 @@ pub(super) fn validate(text: &str) -> Vec<Diagnostic> {
         index = cursor.max(index + 1);
     }
 
+    // --- MD042 и MD045: ссылки и изображения ---
+    check_link_and_image_rules(text, &mut result);
+
     // --- MD007, MD029 и MD030: списки ---
     check_list_rules(&lines, &is_code, &mut result);
 
@@ -1498,4 +1511,82 @@ fn flush_ordered_run(run: &[OrderedItem], result: &mut Vec<Diagnostic>) {
             ));
         }
     }
+}
+
+/// Проверяет пустые ссылки (MD042) и изображения без alt-текста (MD045).
+///
+/// Для инлайн-разметки используется `pulldown-cmark`: он уже знает, что
+/// находится внутри кода или HTML, и отдаёт байтовые диапазоны событий.
+/// Диапазоны переводятся в номера строк и колонки в символах.
+fn check_link_and_image_rules(text: &str, result: &mut Vec<Diagnostic>) {
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_FOOTNOTES);
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TASKLISTS);
+    options.insert(Options::ENABLE_HEADING_ATTRIBUTES);
+
+    let parser = Parser::new_ext(text, options).into_offset_iter();
+    // Alt-текст изображения может состоять из нескольких событий
+    // (текст и inline-код), поэтому накапливаем его в стеке.
+    let mut images: Vec<(Range<usize>, String)> = Vec::new();
+
+    for (event, range) in parser {
+        match event {
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                let destination = dest_url.trim();
+                if destination.is_empty() || destination == "#" {
+                    push_range_diagnostic(text, result, Rule::Md042, range);
+                }
+            }
+            Event::Start(Tag::Image { .. }) => {
+                images.push((range, String::new()));
+            }
+            Event::Text(value) | Event::Code(value) => {
+                if let Some((_, alt)) = images.last_mut() {
+                    alt.push_str(&value);
+                }
+            }
+            Event::End(TagEnd::Image) => {
+                if let Some((range, alt)) = images.pop() {
+                    if alt.trim().is_empty() {
+                        push_range_diagnostic(text, result, Rule::Md045, range);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Добавляет диагностику по байтовому диапазону события.
+///
+/// Если событие занимает несколько строк, подчёркиваем первый видимый
+/// символ: диапазон `GtkTextTag` всегда должен быть в пределах строки.
+fn push_range_diagnostic(
+    text: &str,
+    result: &mut Vec<Diagnostic>,
+    rule: Rule,
+    range: Range<usize>,
+) {
+    let (line, start_col) = position_at(text, range.start);
+    let (end_line, end_col) = position_at(text, range.end);
+
+    let end_col = if end_line == line && end_col > start_col {
+        end_col
+    } else {
+        start_col + 1
+    };
+
+    result.push(Diagnostic::new(rule, line as usize, start_col, end_col));
+}
+
+/// Переводит байтовое смещение в номер строки и колонку в символах.
+fn position_at(text: &str, byte_offset: usize) -> (i32, i32) {
+    let offset = byte_offset.min(text.len());
+    let before = &text[..offset];
+    let line = before.bytes().filter(|byte| *byte == b'\n').count() as i32;
+    let line_start = before.rfind('\n').map_or(0, |index| index + 1);
+    let column = before[line_start..].chars().count() as i32;
+    (line, column)
 }
