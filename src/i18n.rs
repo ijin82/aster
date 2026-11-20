@@ -586,6 +586,76 @@ impl Language {
         }
     }
 
+    pub fn pref_markdown_lint_title(&self) -> &'static str {
+        match self {
+            Language::Russian => "Проверять стиль Markdown",
+            Language::English => "Check Markdown Style",
+        }
+    }
+
+    pub fn pref_markdown_lint_subtitle(&self) -> &'static str {
+        match self {
+            Language::Russian => {
+                "Подчёркивать нарушения правил MD009, MD010, MD012, MD022, MD025, MD031, MD032, MD040 и MD047"
+            }
+            Language::English => {
+                "Underline violations of MD009, MD010, MD012, MD022, MD025, MD031, MD032, MD040, and MD047"
+            }
+        }
+    }
+
+    /// Описание нарушения стиля Markdown по идентификатору правила.
+    ///
+    /// Строки живут в i18n, а не в модуле диагностики: при смене языка
+    /// список проблем пересоздавать не нужно, сообщение собирается в
+    /// момент показа подсказки.
+    pub fn lint_message(&self, rule: &str) -> &'static str {
+        match rule {
+            "MD009" => match self {
+                Language::Russian => "Лишние пробелы в конце строки",
+                Language::English => "Trailing spaces at the end of the line",
+            },
+            "MD010" => match self {
+                Language::Russian => "Жёсткая табуляция",
+                Language::English => "Hard tab character",
+            },
+            "MD012" => match self {
+                Language::Russian => "Несколько пустых строк подряд",
+                Language::English => "Multiple consecutive blank lines",
+            },
+            "MD022" => match self {
+                Language::Russian => "Заголовок должен быть окружён пустыми строками",
+                Language::English => "Headings should be surrounded by blank lines",
+            },
+            "MD025" => match self {
+                Language::Russian => {
+                    "В документе должен быть только один заголовок первого уровня"
+                }
+                Language::English => "Multiple top-level headings in the same document",
+            },
+            "MD031" => match self {
+                Language::Russian => "Блок кода должен быть окружён пустыми строками",
+                Language::English => "Fenced code blocks should be surrounded by blank lines",
+            },
+            "MD032" => match self {
+                Language::Russian => "Список должен быть окружён пустыми строками",
+                Language::English => "Lists should be surrounded by blank lines",
+            },
+            "MD040" => match self {
+                Language::Russian => "У блока кода не указан язык",
+                Language::English => "Fenced code blocks should have a language specified",
+            },
+            "MD047" => match self {
+                Language::Russian => "Файл должен заканчиваться одним переводом строки",
+                Language::English => "Files should end with a single newline character",
+            },
+            _ => match self {
+                Language::Russian => "Нарушение стиля Markdown",
+                Language::English => "Markdown style violation",
+            },
+        }
+    }
+
     // --- Окно «О программе» (About) ---
 
     pub fn about_comments(&self) -> &'static str {

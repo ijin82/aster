@@ -81,6 +81,13 @@ pub struct AppSettings {
     /// Показывать ли пробелы и табы в редакторе.
     #[serde(default = "default_show_whitespace")]
     pub show_whitespace: bool,
+    /// Включена ли проверка стиля Markdown (волнистые подчёркивания).
+    ///
+    /// По умолчанию включена: линтер не меняет документ, поэтому его можно
+    /// безопасно запускать при открытии любого файла. Отключается
+    /// переключателем в настройках редактора.
+    #[serde(default = "default_markdown_lint")]
+    pub markdown_lint: bool,
     /// Сохраненные позиции курсора (строка, колонка) для недавно открывавшихся файлов.
     #[serde(default)]
     pub file_cursor_positions: HashMap<String, (usize, usize)>,
@@ -117,6 +124,14 @@ fn default_soft_wrap() -> bool {
 }
 
 fn default_show_whitespace() -> bool {
+    true
+}
+
+/// Проверка стиля Markdown включена по умолчанию.
+///
+/// Это не правка текста, а лишь подсказки, поэтому линтер не мешает
+/// открывать чужие документы: его всегда можно выключить в настройках.
+fn default_markdown_lint() -> bool {
     true
 }
 
@@ -164,6 +179,7 @@ impl Default for AppSettings {
             indent_width: default_indent_width(),
             soft_wrap: default_soft_wrap(),
             show_whitespace: default_show_whitespace(),
+            markdown_lint: default_markdown_lint(),
             file_cursor_positions: HashMap::new(),
             file_view_states: HashMap::new(),
             session_files: Vec::new(),
