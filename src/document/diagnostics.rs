@@ -7,9 +7,9 @@
 //! - не выставляет флаг «есть несохранённые изменения»;
 //! - может быть полностью выключен без изменения документа.
 //!
-//! Реализованы правила MD009, MD010, MD012, MD022, MD025, MD031, MD032,
-//! MD040 и MD047. Это подмножество `markdownlint`, которое не требует
-//! конфигурации и не даёт спорных предупреждений о вкусе разметки.
+//! Реализованы правила MD009, MD010, MD012, MD022, MD025, MD026, MD031,
+//! MD032, MD040 и MD047. Это подмножество `markdownlint`, которое не
+//! требует конфигурации и не даёт спорных предупреждений о вкусе разметки.
 //!
 //! # Почему колонки считаются в символах, а не в байтах
 //!
@@ -43,6 +43,13 @@ const LINT_DELAY: Duration = Duration::from_millis(350);
 const WARNING_TAG: &str = "lint-warning";
 const ERROR_TAG: &str = "lint-error";
 
+/// Знаки препинания, которые нельзя оставлять в конце заголовка.
+///
+/// Это значение по умолчанию из markdownlint. Вопросительный знак
+/// намеренно разрешён: заголовки в стиле FAQ — распространённое явление.
+/// Полноширинные варианты нужны для документов на китайском и японском.
+const MD026_PUNCTUATION: &str = ".,;:!。，；：！";
+
 /// Важность диагностики.
 ///
 /// Стилевые правила — предупреждения; ошибкой помечается только нарушение
@@ -69,6 +76,8 @@ pub(super) enum Rule {
     Md022,
     /// MD025 — больше одного заголовка первого уровня.
     Md025,
+    /// MD026 — знак препинания в конце заголовка.
+    Md026,
     /// MD031 — блок кода не окружён пустыми строками.
     Md031,
     /// MD032 — список не окружён пустыми строками.
@@ -88,6 +97,7 @@ impl Rule {
             Rule::Md012 => "MD012",
             Rule::Md022 => "MD022",
             Rule::Md025 => "MD025",
+            Rule::Md026 => "MD026",
             Rule::Md031 => "MD031",
             Rule::Md032 => "MD032",
             Rule::Md040 => "MD040",
@@ -117,6 +127,7 @@ impl Rule {
             Rule::Md012 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md012.md",
             Rule::Md022 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md022.md",
             Rule::Md025 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md025.md",
+            Rule::Md026 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md026.md",
             Rule::Md031 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md031.md",
             Rule::Md032 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md032.md",
             Rule::Md040 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md040.md",
@@ -640,14 +651,14 @@ pub(super) fn validate(text: &str) -> Vec<Diagnostic> {
         push_blank_run(&mut result, start, line_count);
     }
 
-    // --- MD022 и MD025: заголовки ATX ---
+    // --- MD022, MD025 и MD026: заголовки ATX ---
     let mut first_level_seen = false;
     for (index, line) in lines.iter().enumerate() {
         if is_code[index] {
             continue;
         }
 
-        let Some(level) = parse_atx_heading(line) else {
+        let Some((level, content_start, content_end)) = atx_heading_parts(line) else {
             continue;
         };
 
@@ -673,6 +684,29 @@ pub(super) fn validate(text: &str) -> Vec<Diagnostic> {
                 ));
             } else {
                 first_level_seen = true;
+            }
+        }
+
+        // MD026: последний видимый символ заголовка не должен быть
+        // знаком препинания. Закрывающие решётки (`## Заголовок ##`)
+        // уже отрезаны в atx_heading_parts, поэтому они не мешают.
+        if content_end > content_start {
+            let content = &line[content_start..content_end];
+            let Some(last_char) = content.chars().next_back() else {
+                continue;
+            };
+
+            if MD026_PUNCTUATION.contains(last_char)
+                && !(last_char == ';' && ends_with_html_entity(content))
+            {
+                let punctuation_start = content_end - last_char.len_utf8();
+                let start_col = char_index(line, punctuation_start);
+                result.push(Diagnostic::new(
+                    Rule::Md026,
+                    index,
+                    start_col,
+                    start_col + 1,
+                ));
             }
         }
     }
@@ -935,12 +969,15 @@ fn is_closing_fence(line: &str, marker: char, min_length: usize) -> bool {
     length >= min_length && rest[length..].trim().is_empty()
 }
 
-/// Возвращает уровень заголовка ATX (`#` … `######`) или `None`.
+/// Разбирает заголовок ATX и возвращает его уровень и границы текста.
 ///
-/// Заголовком считается только строка, где после решёток стоит пробел,
-/// таб или конец строки. Благодаря этому `#hashtag` не принимается за
-/// заголовок и не порождает ложных предупреждений.
-fn parse_atx_heading(line: &str) -> Option<u8> {
+/// Границы нужны MD026, чтобы подчеркнуть последний видимый символ,
+/// не задевая закрывающие решётки. Заголовком считается только строка,
+/// где после решёток стоит пробел, таб или конец строки: `#hashtag`
+/// остаётся обычным текстом.
+///
+/// Возвращает `(уровень, начало_текста, конец_текста)` в байтах строки.
+fn atx_heading_parts(line: &str) -> Option<(u8, usize, usize)> {
     let indent = line.chars().take_while(|ch| *ch == ' ').count();
     if indent > 3 {
         return None;
@@ -953,11 +990,59 @@ fn parse_atx_heading(line: &str) -> Option<u8> {
     }
 
     let after = &rest[level..];
-    if after.is_empty() || after.starts_with(' ') || after.starts_with('\t') {
-        Some(level as u8)
-    } else {
-        None
+    if !(after.is_empty() || after.starts_with(' ') || after.starts_with('\t')) {
+        return None;
     }
+
+    // Обрезаем пробелы вокруг содержимого, а затем — закрывающую
+    // последовательность решёток, если перед ней есть пробел.
+    let leading = after.len() - after.trim_start().len();
+    let start = indent + level + leading;
+    let mut end = line.len() - (after.len() - after.trim_end().len());
+
+    if end > start && line[start..end].ends_with('#') {
+        let hash_run_start = start + line[start..end].trim_end_matches('#').len();
+        let is_closing_sequence =
+            hash_run_start == start || line[start..hash_run_start].ends_with(char::is_whitespace);
+
+        if is_closing_sequence {
+            end = start + line[start..hash_run_start].trim_end().len();
+        }
+    }
+
+    Some((level as u8, start, end))
+}
+
+/// Проверяет, что текст заканчивается HTML-сущностью (`&copy;`, `&#169;`).
+///
+/// markdownlint не считает точку с запятой в конце такой сущности
+/// знаком препинания заголовка. Без этой проверки `## Copyright &copy;`
+/// получал бы ложное предупреждение.
+fn ends_with_html_entity(content: &str) -> bool {
+    let Some(before_semicolon) = content.strip_suffix(';') else {
+        return false;
+    };
+    let Some(ampersand) = before_semicolon.rfind('&') else {
+        return false;
+    };
+
+    let entity = &before_semicolon[ampersand + 1..];
+    if entity.is_empty() {
+        return false;
+    }
+
+    if let Some(hex) = entity
+        .strip_prefix("#x")
+        .or_else(|| entity.strip_prefix("#X"))
+    {
+        return !hex.is_empty() && hex.chars().all(|ch| ch.is_ascii_hexdigit());
+    }
+
+    if let Some(decimal) = entity.strip_prefix('#') {
+        return !decimal.is_empty() && decimal.chars().all(|ch| ch.is_ascii_digit());
+    }
+
+    entity.chars().all(|ch| ch.is_ascii_alphanumeric())
 }
 
 /// Возвращает отступ элемента списка в символах или `None`.

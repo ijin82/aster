@@ -685,3 +685,38 @@ fn test_file_monitor_hash_is_tracked_after_save_and_reload() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn test_lint_md026_trailing_punctuation_in_heading() {
+    let diagnostics = validate("## Heading;\n");
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].rule, Rule::Md026);
+    assert_eq!(diagnostics[0].line, 0);
+    assert_eq!(diagnostics[0].start_col, 10);
+    assert_eq!(diagnostics[0].end_col, 11);
+
+    // Точный пример из документации проекта: заголовок с точкой с запятой.
+    let example = validate("## 1. Списки задач (GFM Task Lists);\n");
+    assert_eq!(example.len(), 1);
+    assert_eq!(example[0].rule, Rule::Md026);
+
+    // Вопросительный знак разрешён по умолчанию (заголовки FAQ).
+    assert!(validate("## FAQ?\n").is_empty());
+
+    // Полноширинная пунктуация тоже ловится.
+    assert_eq!(validate("## Заголовок；\n")[0].rule, Rule::Md026);
+
+    // Точка с запятой в HTML-сущности — не пунктуация заголовка.
+    assert!(validate("## Copyright &copy;\n").is_empty());
+
+    // Закрывающие решётки не мешают найти знак препинания.
+    let with_closing_hashes = validate("## Heading; ##\n");
+    assert_eq!(with_closing_hashes[0].rule, Rule::Md026);
+    assert_eq!(with_closing_hashes[0].start_col, 10);
+
+    // Если после сущности есть настоящая пунктуация, правило срабатывает.
+    assert_eq!(validate("## A &copy; B;\n")[0].rule, Rule::Md026);
+
+    // Внутри блока кода заголовок не проверяется.
+    assert!(validate("```md\n## Heading;\n```\n").is_empty());
+}

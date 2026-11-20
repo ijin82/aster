@@ -626,6 +626,10 @@ impl Language {
                 }
                 Language::English => "Multiple top-level headings in the same document",
             },
+            "MD026" => match self {
+                Language::Russian => "Знак препинания в конце заголовка",
+                Language::English => "Trailing punctuation in heading",
+            },
             "MD031" => match self {
                 Language::Russian => "Блок кода должен быть окружён пустыми строками",
                 Language::English => "Fenced code blocks should be surrounded by blank lines",
