@@ -837,9 +837,9 @@ impl Document {
         // 7. Политика ссылок и запрет навигации самого WebView.
         self.setup_link_policy();
 
-        // 8. Подсказки и контекстное меню для нарушений стиля.
+        // 8. Подсказки и Ctrl+клик по нарушениям стиля.
         self.setup_diagnostic_tooltip();
-        self.setup_lint_context_menu();
+        self.setup_lint_links();
     }
 
 

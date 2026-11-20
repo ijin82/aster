@@ -22,6 +22,7 @@
 
 use gtk4::prelude::*;
 use gtk4::{gdk, glib, pango};
+use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -293,51 +294,112 @@ impl Document {
             });
     }
 
-    /// Открывает документацию правила по правой кнопке мыши.
+    /// Делает подчёркнутые фрагменты «ссылками»: Ctrl+клик открывает
+    /// документацию правила, а при наведении с зажатым Ctrl курсор
+    /// меняется на «палец», как у ссылки в браузере.
     ///
-    /// Никаких поповеров и дополнительных окон: ПКМ по подчёркнутому
-    /// фрагменту сразу запускает браузер со страницей markdownlint.
-    /// Такой сценарий не создаёт вложенных GTK-виджетов и не может
-    /// заблокировать редактор, если пользователь передумал.
-    pub(super) fn setup_lint_context_menu(self: &Rc<Self>) {
-        let gesture = gtk4::GestureClick::new();
-        gesture.set_button(3);
+    /// Правый клик не перехватывается вовсе: штатное контекстное меню
+    /// редактора остаётся доступным, а линтер не создаёт ни одного
+    /// дополнительного виджета.
+    pub(super) fn setup_lint_links(self: &Rc<Self>) {
+        let hover = Rc::new(LintHoverState::default());
 
-        let weak_doc = Rc::downgrade(self);
-        gesture.connect_pressed(move |gesture, _n_press, x, y| {
-            let Some(doc) = weak_doc.upgrade() else {
-                return;
-            };
+        // --- Курсор при наведении ---
+        let motion = gtk4::EventControllerMotion::new();
+        {
+            let weak_doc = Rc::downgrade(self);
+            let hover = hover.clone();
+            motion.connect_motion(move |_, x, y| {
+                let Some(doc) = weak_doc.upgrade() else {
+                    return;
+                };
 
-            let view = &doc.text_view;
-            let (buffer_x, buffer_y) = view.window_to_buffer_coords(
-                gtk4::TextWindowType::Widget,
-                x as i32,
-                y as i32,
-            );
+                let rule = {
+                    let diagnostics = doc.diagnostics.borrow();
+                    rule_at_position(&doc.text_view, &diagnostics, x, y)
+                };
 
-            let Some(iter) = view.iter_at_location(buffer_x, buffer_y) else {
-                gesture.set_state(gtk4::EventSequenceState::Denied);
-                return;
-            };
+                hover.rule.set(rule);
+                update_lint_cursor(&doc.text_view, &hover, ctrl_is_down(&doc.text_view));
+            });
+        }
+        self.text_view.add_controller(motion);
 
-            let rule = {
-                let diagnostics = doc.diagnostics.borrow();
-                diagnostic_at(&diagnostics, iter.line(), iter.line_offset())
-                    .map(|diagnostic| diagnostic.rule)
-            };
+        // Нажатие/отпускание Ctrl обновляет курсор сразу, без движения
+        // мыши. Если фокус не в редакторе, курсор обновится при
+        // ближайшем движении — это незаметно на практике.
+        let key = gtk4::EventControllerKey::new();
+        {
+            let weak_doc = Rc::downgrade(self);
+            let hover = hover.clone();
+            key.connect_key_pressed(move |_, keyval, _, _| {
+                if matches!(keyval, gdk::Key::Control_L | gdk::Key::Control_R) {
+                    if let Some(doc) = weak_doc.upgrade() {
+                        update_lint_cursor(&doc.text_view, &hover, true);
+                    }
+                }
+                glib::Propagation::Proceed
+            });
+        }
+        {
+            let weak_doc = Rc::downgrade(self);
+            let hover = hover.clone();
+            key.connect_key_released(move |_, keyval, _, _| {
+                if matches!(keyval, gdk::Key::Control_L | gdk::Key::Control_R) {
+                    if let Some(doc) = weak_doc.upgrade() {
+                        update_lint_cursor(&doc.text_view, &hover, false);
+                    }
+                }
+            });
+        }
+        self.text_view.add_controller(key);
 
-            // ПКМ по обычному тексту не перехватываем: в будущем здесь
-            // может появиться штатное меню копирования/вставки.
-            let Some(rule) = rule else {
-                gesture.set_state(gtk4::EventSequenceState::Denied);
-                return;
-            };
+        // --- Ctrl+клик по диагностике ---
+        // Capture-фаза и Denied для обычных кликов: выделение текста и
+        // установка курсора мышью работают как раньше.
+        let click = gtk4::GestureClick::new();
+        click.set_button(1);
+        click.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        {
+            let weak_doc = Rc::downgrade(self);
+            click.connect_pressed(move |gesture, _n_press, x, y| {
+                let Some(doc) = weak_doc.upgrade() else {
+                    return;
+                };
 
-            open_uri(rule.docs_url());
-        });
+                if !ctrl_is_down(&doc.text_view) {
+                    gesture.set_state(gtk4::EventSequenceState::Denied);
+                    return;
+                }
 
-        self.text_view.add_controller(gesture);
+                let rule = {
+                    let diagnostics = doc.diagnostics.borrow();
+                    rule_at_position(&doc.text_view, &diagnostics, x, y)
+                };
+
+                if let Some(rule) = rule {
+                    gesture.set_state(gtk4::EventSequenceState::Claimed);
+                    open_uri(rule.docs_url());
+                } else {
+                    gesture.set_state(gtk4::EventSequenceState::Denied);
+                }
+            });
+        }
+        self.text_view.add_controller(click);
+
+        // При уходе фокуса из редактора сбрасываем курсор: иначе он
+        // останется «пальцем» над уже неактивным текстом.
+        let focus = gtk4::EventControllerFocus::new();
+        {
+            let weak_doc = Rc::downgrade(self);
+            focus.connect_leave(move |_| {
+                if let Some(doc) = weak_doc.upgrade() {
+                    hover.rule.set(None);
+                    update_lint_cursor(&doc.text_view, &hover, false);
+                }
+            });
+        }
+        self.text_view.add_controller(focus);
     }
 
     /// Планирует проверку после последней правки.
@@ -426,6 +488,59 @@ struct FenceOpen {
     marker: char,
     length: usize,
     info_empty: bool,
+}
+
+/// Состояние наведения на диагностику.
+///
+/// `rule` запоминается, чтобы Ctrl можно было нажать после того, как
+/// курсор уже стоит над подчёркиванием: тогда курсор-«палец» включится
+/// без дополнительного движения мыши.
+#[derive(Default)]
+struct LintHoverState {
+    rule: Cell<Option<Rule>>,
+    /// Текущий курсор уже является «пальцем».
+    pointer: Cell<bool>,
+}
+
+/// Возвращает правило под координатами виджета или `None`.
+fn rule_at_position(
+    view: &gtk4::TextView,
+    diagnostics: &[Diagnostic],
+    x: f64,
+    y: f64,
+) -> Option<Rule> {
+    let (buffer_x, buffer_y) =
+        view.window_to_buffer_coords(gtk4::TextWindowType::Widget, x as i32, y as i32);
+    let iter = view.iter_at_location(buffer_x, buffer_y)?;
+    diagnostic_at(diagnostics, iter.line(), iter.line_offset()).map(|diagnostic| diagnostic.rule)
+}
+
+/// Проверяет текущее состояние клавиши Ctrl.
+///
+/// `EventControllerMotion` не передаёт модификаторы, поэтому состояние
+/// запрашивается у клавиатуры напрямую. Для клика и клавиш это не нужно:
+/// там модификаторы приходят вместе с событием.
+fn ctrl_is_down(view: &gtk4::TextView) -> bool {
+    view.display()
+        .default_seat()
+        .and_then(|seat| seat.keyboard())
+        .map(|keyboard| {
+            keyboard
+                .modifier_state()
+                .contains(gdk::ModifierType::CONTROL_MASK)
+        })
+        .unwrap_or(false)
+}
+
+/// Включает или выключает курсор-«палец» над диагностикой.
+fn update_lint_cursor(view: &gtk4::TextView, hover: &LintHoverState, ctrl: bool) {
+    let pointer = ctrl && hover.rule.get().is_some();
+    if hover.pointer.get() == pointer {
+        return;
+    }
+
+    hover.pointer.set(pointer);
+    view.set_cursor_from_name(Some(if pointer { "pointer" } else { "text" }));
 }
 
 /// Проверяет весь текст и возвращает найденные проблемы.

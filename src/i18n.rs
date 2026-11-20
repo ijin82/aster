@@ -653,8 +653,8 @@ impl Language {
 
     pub fn lint_tooltip_hint(&self) -> &'static str {
         match self {
-            Language::Russian => "ПКМ — открыть документацию",
-            Language::English => "Right-click to open documentation",
+            Language::Russian => "Ctrl+клик — открыть документацию",
+            Language::English => "Ctrl+click to open documentation",
         }
     }
 
