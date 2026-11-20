@@ -770,3 +770,53 @@ fn test_lint_heading_formatting_rules() {
         .iter()
         .any(|d| d.rule == Rule::Md018));
 }
+
+#[test]
+fn test_lint_list_rules() {
+    // MD007 — вложенный список с отступом 3 вместо 2.
+    let diagnostics = validate("- item\n   - nested\n");
+    assert!(diagnostics.iter().any(|d| d.rule == Rule::Md007));
+    assert!(!diagnostics.iter().any(|d| d.rule == Rule::Md030));
+
+    // Корректный отступ 2 пробела.
+    assert!(!validate("- item\n  - nested\n")
+        .iter()
+        .any(|d| d.rule == Rule::Md007));
+
+    // Вложенный список под упорядоченным родителем MD007 не проверяет.
+    assert!(!validate("1. item\n   - nested\n")
+        .iter()
+        .any(|d| d.rule == Rule::Md007));
+
+    // MD029 — разрыв в нумерации.
+    let diagnostics = validate("1. one\n3. three\n");
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|d| d.rule == Rule::Md029)
+            .count(),
+        1
+    );
+
+    // Последовательная нумерация и стиль «все единицы» корректны.
+    assert!(!validate("1. one\n1. two\n")
+        .iter()
+        .any(|d| d.rule == Rule::Md029));
+    assert!(!validate("1. one\n2. two\n")
+        .iter()
+        .any(|d| d.rule == Rule::Md029));
+    assert!(!validate("0. zero\n1. one\n2. two\n")
+        .iter()
+        .any(|d| d.rule == Rule::Md029));
+
+    // MD030 — лишние пробелы после маркера.
+    assert!(validate("-  item\n")
+        .iter()
+        .any(|d| d.rule == Rule::Md030));
+    assert!(validate("1.  item\n")
+        .iter()
+        .any(|d| d.rule == Rule::Md030));
+    assert!(!validate("- item\n")
+        .iter()
+        .any(|d| d.rule == Rule::Md030));
+}

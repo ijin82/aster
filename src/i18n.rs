@@ -604,6 +604,10 @@ impl Language {
     /// момент показа подсказки.
     pub fn lint_message(&self, rule: &str) -> &'static str {
         match rule {
+            "MD007" => match self {
+                Language::Russian => "Неверный отступ вложенного списка",
+                Language::English => "Unordered list indentation",
+            },
             "MD009" => match self {
                 Language::Russian => "Лишние пробелы в конце строки",
                 Language::English => "Trailing spaces at the end of the line",
@@ -655,6 +659,14 @@ impl Language {
             "MD026" => match self {
                 Language::Russian => "Знак препинания в конце заголовка",
                 Language::English => "Trailing punctuation in heading",
+            },
+            "MD029" => match self {
+                Language::Russian => "Неверная нумерация упорядоченного списка",
+                Language::English => "Ordered list item prefix",
+            },
+            "MD030" => match self {
+                Language::Russian => "После маркера списка должен быть один пробел",
+                Language::English => "Spaces after list markers",
             },
             "MD031" => match self {
                 Language::Russian => "Блок кода должен быть окружён пустыми строками",

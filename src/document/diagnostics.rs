@@ -7,8 +7,8 @@
 //! - не выставляет флаг «есть несохранённые изменения»;
 //! - может быть полностью выключен без изменения документа.
 //!
-//! Реализованные правила: MD009, MD010, MD012, MD018–MD026, MD031,
-//! MD032, MD040 и MD047. Это подмножество `markdownlint`, которое не
+//! Реализованные правила: MD007, MD009, MD010, MD012, MD018–MD026,
+//! MD029–MD032, MD040 и MD047. Это подмножество `markdownlint`, которое не
 //! требует конфигурации и не даёт спорных предупреждений о вкусе разметки.
 //!
 //! # Почему колонки считаются в символах, а не в байтах
@@ -67,6 +67,8 @@ pub(super) enum Severity {
 /// пользователь может найти подробное описание в документации линтера.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Rule {
+    /// MD007 — неверный отступ вложенного неупорядоченного списка.
+    Md007,
     /// MD009 — пробелы в конце строки.
     Md009,
     /// MD010 — символ табуляции.
@@ -91,6 +93,10 @@ pub(super) enum Rule {
     Md025,
     /// MD026 — знак препинания в конце заголовка.
     Md026,
+    /// MD029 — неверная нумерация упорядоченного списка.
+    Md029,
+    /// MD030 — неверное число пробелов после маркера списка.
+    Md030,
     /// MD031 — блок кода не окружён пустыми строками.
     Md031,
     /// MD032 — список не окружён пустыми строками.
@@ -105,6 +111,7 @@ impl Rule {
     /// Возвращает идентификатор правила в виде `MDxxx`.
     pub(super) fn id(self) -> &'static str {
         match self {
+            Rule::Md007 => "MD007",
             Rule::Md009 => "MD009",
             Rule::Md010 => "MD010",
             Rule::Md012 => "MD012",
@@ -117,6 +124,8 @@ impl Rule {
             Rule::Md024 => "MD024",
             Rule::Md025 => "MD025",
             Rule::Md026 => "MD026",
+            Rule::Md029 => "MD029",
+            Rule::Md030 => "MD030",
             Rule::Md031 => "MD031",
             Rule::Md032 => "MD032",
             Rule::Md040 => "MD040",
@@ -141,6 +150,7 @@ impl Rule {
     /// которую поддерживает markdownlint.
     fn docs_url(self) -> &'static str {
         match self {
+            Rule::Md007 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md007.md",
             Rule::Md009 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md009.md",
             Rule::Md010 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md010.md",
             Rule::Md012 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md012.md",
@@ -153,6 +163,8 @@ impl Rule {
             Rule::Md024 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md024.md",
             Rule::Md025 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md025.md",
             Rule::Md026 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md026.md",
+            Rule::Md029 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md029.md",
+            Rule::Md030 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md030.md",
             Rule::Md031 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md031.md",
             Rule::Md032 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md032.md",
             Rule::Md040 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md040.md",
@@ -956,6 +968,9 @@ pub(super) fn validate(text: &str) -> Vec<Diagnostic> {
         index = cursor.max(index + 1);
     }
 
+    // --- MD007, MD029 и MD030: списки ---
+    check_list_rules(&lines, &is_code, &mut result);
+
     // --- MD047: ровно один перевод строки в конце файла ---
     if !text.is_empty() {
         let has_single_final_newline = text
@@ -1202,35 +1217,285 @@ fn ends_with_html_entity(content: &str) -> bool {
     entity.chars().all(|ch| ch.is_ascii_alphanumeric())
 }
 
+/// Вид маркера списка.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListMarkerKind {
+    /// `-`, `*` или `+`.
+    Unordered,
+    /// `1.` или `1)`; хранит само число.
+    Ordered(u32),
+}
+
+impl ListMarkerKind {
+    fn is_unordered(self) -> bool {
+        matches!(self, Self::Unordered)
+    }
+}
+
+/// Разобранный элемент списка.
+struct ListItem {
+    indent: usize,
+    kind: ListMarkerKind,
+    marker_start: usize,
+    marker_end: usize,
+    spaces_after: usize,
+    content_start: usize,
+    content_end: usize,
+}
+
+impl ListItem {
+    fn has_content(&self) -> bool {
+        self.content_start < self.content_end
+    }
+}
+
 /// Возвращает отступ элемента списка в символах или `None`.
-///
-/// Поддерживаются маркеры `-`, `*`, `+` и упорядоченные `1.` / `1)`.
-/// После маркера обязателен пробел или таб — иначе это не список.
 fn list_item_indent(line: &str) -> Option<usize> {
+    parse_list_item(line).map(|item| item.indent)
+}
+
+/// Разбирает маркер списка и позиции его частей.
+///
+/// Поддерживаются `-`, `*`, `+` и упорядоченные `1.` / `1)`. После
+/// маркера обязателен пробел или таб — иначе это не элемент списка.
+fn parse_list_item(line: &str) -> Option<ListItem> {
     let indent = indent_chars(line);
     let prefix_bytes: usize = line.chars().take(indent).map(char::len_utf8).sum();
     let rest = &line[prefix_bytes..];
 
-    for bullet in ['-', '*', '+'] {
-        let mut chars = rest.chars();
-        if chars.next() == Some(bullet) && matches!(chars.next(), Some(' ') | Some('\t')) {
-            return Some(indent);
-        }
+    let first = rest.chars().next()?;
+    let (kind, marker_len) = if matches!(first, '-' | '*' | '+')
+        && matches!(rest.chars().nth(1), Some(' ') | Some('\t'))
+    {
+        (ListMarkerKind::Unordered, first.len_utf8())
+    } else {
+        parse_ordered_marker(rest)?
+    };
+
+    let marker_start = prefix_bytes;
+    let marker_end = marker_start + marker_len;
+    let after_marker = &line[marker_end..];
+    let spaces_after = after_marker
+        .chars()
+        .take_while(|ch| *ch == ' ' || *ch == '\t')
+        .count();
+
+    if spaces_after == 0 {
+        return None;
     }
 
+    let content_start = marker_end + spaces_after;
+    let content_end = line.trim_end().len();
+
+    Some(ListItem {
+        indent,
+        kind,
+        marker_start,
+        marker_end,
+        spaces_after,
+        content_start,
+        content_end,
+    })
+}
+
+/// Разбирает `1.` или `1)` в начале строки.
+fn parse_ordered_marker(rest: &str) -> Option<(ListMarkerKind, usize)> {
     let bytes = rest.as_bytes();
     let digits = bytes
         .iter()
         .take_while(|byte| byte.is_ascii_digit())
         .count();
 
-    if (1..=9).contains(&digits) && digits < bytes.len() {
-        let marker = bytes[digits];
-        let after = bytes.get(digits + 1).copied();
-        if (marker == b'.' || marker == b')') && matches!(after, Some(b' ') | Some(b'\t')) {
-            return Some(indent);
+    if digits == 0 || digits > 9 || digits >= bytes.len() {
+        return None;
+    }
+
+    let marker = bytes[digits];
+    let after = bytes.get(digits + 1).copied();
+    if !(marker == b'.' || marker == b')') || !matches!(after, Some(b' ') | Some(b'\t')) {
+        return None;
+    }
+
+    let number = rest[..digits].parse::<u32>().ok()?;
+    Some((ListMarkerKind::Ordered(number), digits + 1))
+}
+
+/// Один упорядоченный элемент для MD029.
+struct OrderedItem {
+    line: usize,
+    number: u32,
+    marker_start: usize,
+    marker_end: usize,
+}
+
+/// Проверяет отступы, нумерацию и пробелы после маркеров списков.
+///
+/// Это отдельный проход: правила MD007/MD029/MD030 смотрят на маркер,
+/// а не на границы блока, как MD032. Состояние вложенности хранится в
+/// стеке индексов отступов, поэтому вложенные списки не путаются с
+/// соседними списками верхнего уровня.
+fn check_list_rules(lines: &[&str], is_code: &[bool], result: &mut Vec<Diagnostic>) {
+    let mut list_stack: Vec<(usize, bool)> = Vec::new();
+    let mut ordered_runs: Vec<(usize, Vec<OrderedItem>)> = Vec::new();
+
+    for (index, line) in lines.iter().enumerate() {
+        if is_code[index] {
+            continue;
+        }
+
+        if line.trim().is_empty() {
+            // Пустая строка не завершает список: элементы могут быть
+            // разделены пустыми строками.
+            continue;
+        }
+
+        let Some(item) = parse_list_item(line) else {
+            // Непустая строка без маркера. Строка с отступом — это
+            // продолжение элемента списка; строка без отступа — новый
+            // блок, поэтому состояние вложенности сбрасывается.
+            if indent_chars(line) == 0 {
+                flush_ordered_runs(&mut ordered_runs, result);
+                list_stack.clear();
+            }
+            continue;
+        };
+
+        // --- MD030: ровно один пробел после маркера ---
+        if item.has_content() {
+            let whitespace = &line[item.marker_end..item.content_start];
+            if item.spaces_after != 1 || whitespace.starts_with('\t') {
+                result.push(Diagnostic::new(
+                    Rule::Md030,
+                    index,
+                    item.marker_end as i32,
+                    item.content_start as i32,
+                ));
+            }
+        }
+
+        // --- MD007: отступ вложенного неупорядоченного списка ---
+        while list_stack
+            .last()
+            .is_some_and(|(indent, _)| *indent > item.indent)
+        {
+            list_stack.pop();
+        }
+
+        let is_new_level = !list_stack
+            .last()
+            .is_some_and(|(indent, _)| *indent >= item.indent);
+        if is_new_level {
+            list_stack.push((item.indent, item.kind.is_unordered()));
+        } else if let Some((_, unordered)) = list_stack.last_mut() {
+            *unordered = item.kind.is_unordered();
+        }
+
+        let level = list_stack.len().saturating_sub(1);
+        let parents_are_unordered = list_stack[..level].iter().all(|(_, unordered)| *unordered);
+
+        if item.kind.is_unordered() && parents_are_unordered {
+            let expected = level * 2;
+            if item.indent != expected {
+                result.push(Diagnostic::new(
+                    Rule::Md007,
+                    index,
+                    0,
+                    item.indent.max(1) as i32,
+                ));
+            }
+        }
+
+        // --- MD029: нумерация упорядоченных списков ---
+        if let ListMarkerKind::Ordered(number) = item.kind {
+            // Завершаем только более глубокие упорядоченные списки:
+            // элемент на том же отступе продолжает текущий блок.
+            while ordered_runs
+                .last()
+                .is_some_and(|(indent, _)| *indent > item.indent)
+            {
+                if let Some((_, run)) = ordered_runs.pop() {
+                    flush_ordered_run(&run, result);
+                }
+            }
+
+            if let Some((indent, run)) = ordered_runs.last_mut() {
+                if *indent == item.indent {
+                    run.push(OrderedItem {
+                        line: index,
+                        number,
+                        marker_start: item.marker_start,
+                        marker_end: item.marker_end,
+                    });
+                } else {
+                    ordered_runs.push((
+                        item.indent,
+                        vec![OrderedItem {
+                            line: index,
+                            number,
+                            marker_start: item.marker_start,
+                            marker_end: item.marker_end,
+                        }],
+                    ));
+                }
+            } else {
+                ordered_runs.push((
+                    item.indent,
+                    vec![OrderedItem {
+                        line: index,
+                        number,
+                        marker_start: item.marker_start,
+                        marker_end: item.marker_end,
+                    }],
+                ));
+            }
+        } else {
+            // Неупорядоченный элемент завершает упорядоченные блоки
+            // на том же или более глубоком уровне.
+            while ordered_runs
+                .last()
+                .is_some_and(|(indent, _)| *indent >= item.indent)
+            {
+                if let Some((_, run)) = ordered_runs.pop() {
+                    flush_ordered_run(&run, result);
+                }
+            }
         }
     }
 
-    None
+    flush_ordered_runs(&mut ordered_runs, result);
+}
+
+/// Завершает все накопленные упорядоченные списки.
+fn flush_ordered_runs(runs: &mut Vec<(usize, Vec<OrderedItem>)>, result: &mut Vec<Diagnostic>) {
+    while let Some((_, run)) = runs.pop() {
+        flush_ordered_run(&run, result);
+    }
+}
+
+/// Проверяет один упорядоченный список.
+///
+/// По умолчанию markdownlint использует стиль `one_or_ordered`: либо
+/// все номера равны 1, либо номера идут подряд. Нумерация начинается
+/// с того числа, которое указал автор: `0, 1, 2` и `1, 2, 3` корректны.
+fn flush_ordered_run(run: &[OrderedItem], result: &mut Vec<Diagnostic>) {
+    if run.len() < 2 {
+        return;
+    }
+
+    if run.iter().all(|item| item.number == 1) {
+        return;
+    }
+
+    let first = run[0].number;
+    for (offset, item) in run.iter().enumerate() {
+        let expected = first + offset as u32;
+        if item.number != expected {
+            result.push(Diagnostic::new(
+                Rule::Md029,
+                item.line,
+                item.marker_start as i32,
+                item.marker_end as i32,
+            ));
+        }
+    }
 }
