@@ -18,6 +18,7 @@ The main goal of the project is to serve as a clear, practical guide to building
   - **Independent scroll memory for each mode**: the editor and preview remember their own vertical scroll positions. Switching modes no longer performs fragile recalculation of HTML element coordinates — each mode simply returns to where the user left it. Positions are saved per file and survive application restarts.
   - **Completely silent operation**: GTK's `gtk-error-bell`, event sounds (`gtk-enable-event-sounds`), and input feedback sounds (`gtk-enable-input-feedback-sounds`) are disabled. In addition, media, Web Audio, media streams, and EME are disabled in WebKit, so the Markdown preview cannot play sound.
   - Live Markdown syntax highlighting via GTK tags (`src/highlighter.rs`): headings, bold/italic text, inline code, code blocks, lists, blockquotes, and links.
+  - **Markdown style checking (linter)**: wavy underlines in the editor for violations of MD009, MD010, MD012, MD022, MD025, MD031, MD032, MD040, and MD047. Hovering shows a tooltip with the rule number and explanation; problem lines are also marked with a colored bar in the line number gutter (important for empty lines). The linter never changes the document: edits, Undo, and the unsaved-changes flag are unaffected. Checking runs with a short debounce after the last edit and can be disabled in Preferences.
   - Full color scheme support in the editor (background, text color, caret color, and highlight token colors match the selected theme).
   - Configurable monospace font family, soft line wrapping, and padding.
   - **Quick line indentation (`Tab` / `Shift+Tab`)**: when text is selected, pressing `Tab` adds two spaces to the beginning of each selected line, while `Shift+Tab` removes up to two spaces from the beginning of the lines (preserving selection boundaries and supporting undo with `Ctrl+Z`).
@@ -70,6 +71,7 @@ The main goal of the project is to serve as a clear, practical guide to building
   - Editor font size (applied on the fly to existing and newly entered text via the CSS rule `textview.editor-view text`).
   - Preview font size.
   - **Line number visibility toggle** in edit mode (`adw::SwitchRow`) and with the `Ctrl+Shift+L` shortcut. Numbers are aligned to the first visual row, so on a long soft-wrapped line the number stays at its beginning instead of the middle. The switch is located in the editor settings group.
+  - **Markdown style checking** (enabled by default) — wavy underlines and tooltips for rules MD009, MD010, MD012, MD022, MD025, MD031, MD032, MD040, and MD047. Disabling it instantly removes the underlines from all open tabs.
   - **Shortcuts next to the switches**: combinations are shown as a single compact badge (`Ctrl + Shift + W`) instead of a row of separate keycaps.
   - **Preferences window size memory**: the window opens 15% wider than before, remains freely resizable, and remembers the width and height chosen by the user.
   - Settings are stored as JSON following the XDG standard (`~/.config/aster/settings.json`).
