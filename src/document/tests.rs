@@ -646,3 +646,42 @@ fn test_diagnostic_lookup_finds_rule_at_position() {
     // Другая строка — тоже промах.
     assert!(diagnostic_at(&diagnostics, 1, 5).is_none());
 }
+
+#[gtk4::test]
+fn test_file_monitor_hash_is_tracked_after_save_and_reload() {
+    // Регрессия: после сохранения и перезагрузки хеш содержимого должен
+    // оставаться актуальным. Иначе GFileMonitor принимает собственную
+    // запись за внешнее изменение и показывает лишние тосты.
+    let dir = std::env::temp_dir().join(format!(
+        "aster-monitor-hash-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("document.md");
+    std::fs::write(&path, "old\n").expect("write initial file");
+
+    let settings = Rc::new(RefCell::new(AppSettings::default()));
+    let doc = Document::new(settings, Some(path.clone()), false).expect("create document");
+    assert_eq!(
+        *doc.last_external_file_hash.borrow(),
+        Some(hash_text("old\n"))
+    );
+
+    std::fs::write(&path, "new\n").expect("modify file on disk");
+    doc.reload_from_disk().expect("reload file");
+    assert_eq!(
+        *doc.last_external_file_hash.borrow(),
+        Some(hash_text("new\n")),
+        "reload must remember the content it has just read"
+    );
+
+    doc.buffer.set_text("saved\n");
+    doc.save_to(&path).expect("save document");
+    assert_eq!(
+        *doc.last_external_file_hash.borrow(),
+        Some(hash_text("saved\n")),
+        "save must remember our own write"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

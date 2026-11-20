@@ -22,7 +22,6 @@ use crate::settings::AppSettings;
 
 mod actions;
 mod dialogs;
-mod lint_help;
 mod menus;
 mod preferences;
 mod session;
@@ -31,7 +30,6 @@ mod tabs;
 
 use actions::{install_actions, ActionContext};
 use dialogs::{save_document, save_documents_sequentially, show_unsaved_changes_dialog};
-use lint_help::show_lint_help_window;
 use menus::{rebuild_main_menu, rebuild_tab_menu};
 use style::{apply_color_scheme, apply_editor_style_css, disable_sound_feedback};
 use tabs::{active_document, parent_directory};
@@ -272,8 +270,6 @@ pub fn build_window(
         let search_btn = search_btn.clone();
         let show_toast = show_toast.clone();
         let settings_for_error = settings.clone();
-        // Слабые ссылки: справка не должна удерживать окно после закрытия.
-        let window_for_help = window.downgrade();
         let last_open_directory = last_open_directory.clone();
         let toast_overlay_for_file = toast_overlay.clone();
         let docs_for_recovery = Rc::downgrade(&docs);
@@ -313,21 +309,6 @@ pub fn build_window(
             *doc.tab_page.borrow_mut() = Some(page.clone());
             doc.update_tab_title();
 
-            // ПКМ по диагностике открывает справку на нужном правиле.
-            // Документ хранит только callback и ничего не знает об окне.
-            {
-                let window_for_help = window_for_help.clone();
-                let settings_for_help = settings.clone();
-                doc.set_lint_help_handler(Rc::new(move |rule| {
-                    let Some(window) = window_for_help.upgrade() else {
-                        return;
-                    };
-                    let lang =
-                        Language::from_code(&settings_for_help.borrow().language);
-                    show_lint_help_window(&window, lang, Some(rule));
-                }));
-            }
-
             // Следим за изменениями файла на диске. Слабые ссылки на
             // callbacks окна нужны, чтобы Document не удерживал docs и
             // refresh_active_ui, иначе получился бы цикл владения.
@@ -337,6 +318,10 @@ pub fn build_window(
             let show_toast_for_file = show_toast.clone();
             let toast_overlay_for_conflict = toast_overlay_for_file.clone();
             let persist_for_file = persist_for_file.clone();
+            // Флаг живёт вместе с документом: конфликт в одной вкладке
+            // не должен заглушать уведомление о конфликте в другой.
+            let conflict_toast_visible = Rc::new(Cell::new(false));
+            let conflict_toast_for_file = conflict_toast_visible.clone();
             doc.watch_file(Rc::new(move |change| {
                 let Some(doc) = weak_doc_for_file.upgrade() else {
                     return;
@@ -345,17 +330,31 @@ pub fn build_window(
 
                 match change {
                     FileChange::Reloaded => {
+                        // Файл перечитан без потери правок. Специально
+                        // не показываем тост: при сохранении из другого
+                        // редактора события идут сериями, и уведомление
+                        // на каждое превращается в поток закрывающихся
+                        // плашек. Обновления интерфейса достаточно.
                         if let Some(refresh) = refresh_for_file.upgrade() {
                             refresh();
                         }
                         if let Some(persist) = persist_for_file.upgrade() {
                             persist();
                         }
-                        show_toast_for_file(lang.file_reloaded());
                     }
                     FileChange::Conflict => {
+                        if conflict_toast_for_file.get() {
+                            return;
+                        }
+                        conflict_toast_for_file.set(true);
+
                         let toast = adw::Toast::new(lang.file_changed_on_disk());
                         toast.set_button_label(Some(lang.btn_reload()));
+
+                        let visible_after_dismiss = conflict_toast_for_file.clone();
+                        toast.connect_dismissed(move |_| {
+                            visible_after_dismiss.set(false);
+                        });
 
                         let doc_for_reload = doc.clone();
                         let overlay_for_reload = toast_overlay_for_conflict.clone();
@@ -1068,7 +1067,6 @@ pub fn build_window(
     app.set_accels_for_action("win.find", &["<Control>f"]);
     app.set_accels_for_action("win.find_replace", &["<Control>r"]);
     app.set_accels_for_action("win.preferences", &["<Control>comma"]);
-    app.set_accels_for_action("win.help", &["F1"]);
     app.set_accels_for_action("win.close", &["<Control>q", "<Control>F4"]);
 
     window

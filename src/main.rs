@@ -16,7 +16,6 @@ mod document;
 mod external;
 mod highlighter;
 mod i18n;
-mod lint_rules;
 mod recovery;
 mod renderer;
 mod settings;

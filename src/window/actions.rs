@@ -15,7 +15,6 @@ use crate::settings::AppSettings;
 use crate::shortcuts;
 
 use super::dialogs::show_about_dialog;
-use super::lint_help::show_lint_help_window;
 use super::preferences::show_preferences_dialog;
 use super::tabs::{active_document, select_tab_wrapped};
 
@@ -298,19 +297,6 @@ pub(crate) fn install_actions(ctx: ActionContext) -> gio::SimpleActionGroup {
         });
     }
     actions.add_action(&preferences_action);
-
-    // F1 и пункт «Справка» открывают каталог правил. Справка не
-    // модальная: из неё удобно копировать примеры в редактор.
-    let help_action = gio::SimpleAction::new("help", None);
-    {
-        let window = window.clone();
-        let settings = settings.clone();
-        help_action.connect_activate(move |_, _| {
-            let lang = Language::from_code(&settings.borrow().language);
-            show_lint_help_window(&window, lang, None);
-        });
-    }
-    actions.add_action(&help_action);
 
     let about_action = gio::SimpleAction::new("about", None);
     {

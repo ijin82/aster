@@ -39,13 +39,6 @@ mod tests;
 mod whitespace;
 
 use diagnostics::Diagnostic;
-pub(crate) use diagnostics::{Rule, Severity};
-
-/// Обработчик открытия справки по правилу линтера.
-///
-/// Псевдоним нужен не только для читаемости: без него Clippy считает
-/// тип поля `RefCell<Option<Rc<dyn Fn(Rule)>>>` слишком сложным.
-type LintHelpHandler = Rc<dyn Fn(Rule)>;
 use editor::{
     apply_restored_cursor_position, schedule_cursor_scroll, setup_editor_key_handling,
 };
@@ -382,11 +375,6 @@ pub struct Document {
     diagnostics: Rc<RefCell<Vec<Diagnostic>>>,
     /// Таймер отложенной проверки стиля после последней правки.
     diagnostics_timeout: Cell<Option<glib::SourceId>>,
-    /// Обработчик открытия подробной справки по правилу.
-    ///
-    /// Окно приложения устанавливает его после создания документа.
-    /// Так модель документа не зависит от окна и его диалогов.
-    lint_help_handler: RefCell<Option<LintHelpHandler>>,
     /// Текстовый буфер редактора.
     pub buffer: gtk4::TextBuffer,
     /// Виджет редактора.
@@ -682,7 +670,6 @@ impl Document {
             bulk_editing: Cell::new(false),
             diagnostics,
             diagnostics_timeout: Cell::new(None),
-            lint_help_handler: RefCell::new(None),
             buffer,
             text_view,
             editor_scroll,
@@ -876,6 +863,9 @@ impl Document {
         self.buffer.set_text(&content);
         self.bulk_editing.set(false);
         highlighter::highlight_markdown_buffer(&self.buffer);
+        // Хеш текущего содержимого на диске: первое событие монитора
+        // после открытия не должно выглядеть как внешнее изменение.
+        *self.last_external_file_hash.borrow_mut() = Some(hash_text(&content));
         // Файл загружен целиком — проверяем стиль сразу, не дожидаясь
         // дебаунса: пользователь должен увидеть проблемы при открытии.
         self.refresh_diagnostics();
@@ -1128,7 +1118,9 @@ impl Document {
 
         *self.current_file.borrow_mut() = Some(path.to_path_buf());
         self.is_modified.set(false);
-        *self.last_external_file_hash.borrow_mut() = None;
+        // Запоминаем хеш собственной записи: монитор увидит событие от
+        // нашего сохранения и не должен показывать его как внешнее.
+        *self.last_external_file_hash.borrow_mut() = Some(hash_text(&text));
         self.update_tab_title();
         self.restart_file_monitor();
         Ok(())
@@ -1201,11 +1193,7 @@ impl Document {
 
             // Хешируем именно внешнюю версию. Серия событий от одного
             // сохранения даст один и тот же хеш и не создаст несколько toast.
-            let content_hash = {
-                let mut hasher = DefaultHasher::new();
-                content.hash(&mut hasher);
-                hasher.finish()
-            };
+            let content_hash = hash_text(&content);
             if *doc.last_external_file_hash.borrow() == Some(content_hash) {
                 return;
             }
@@ -1246,6 +1234,7 @@ impl Document {
             .text(&self.buffer.start_iter(), &self.buffer.end_iter(), false);
         if current == content {
             self.is_modified.set(false);
+            *self.last_external_file_hash.borrow_mut() = Some(hash_text(&content));
             self.update_tab_title();
             return Ok(());
         }
@@ -1274,7 +1263,7 @@ impl Document {
         self.buffer.place_cursor(&iter);
 
         self.is_modified.set(false);
-        *self.last_external_file_hash.borrow_mut() = None;
+        *self.last_external_file_hash.borrow_mut() = Some(hash_text(&content));
         self.update_tab_title();
         if self.is_preview_active.get() {
             self.refresh_preview();
@@ -1459,6 +1448,18 @@ impl Document {
         }
     }
 
+}
+
+/// Вычисляет быстрый хеш содержимого файла.
+///
+/// Хеш нужен не для криптографии, а чтобы отличить повторное событие
+/// `GFileMonitor` от реального изменения. Он также подавляет реакцию на
+/// собственную запись: после сохранения документ запоминает хеш того, что
+/// сам записал, и не показывает тост «файл изменён на диске».
+fn hash_text(text: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Возвращает канонический путь для использования в качестве ключа настроек.

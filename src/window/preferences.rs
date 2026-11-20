@@ -8,7 +8,6 @@ use crate::document::Document;
 use crate::i18n::Language;
 use crate::settings::AppSettings;
 
-use super::lint_help::show_lint_help_window;
 use super::style::{apply_color_scheme, apply_editor_style_css, get_system_monospace_fonts};
 
 /// Преобразует GTK-акселератор в одну человекочитаемую строку.
@@ -405,33 +404,6 @@ pub(crate) fn show_preferences_dialog(
     editor_group.add(&markdown_lint_row);
 
     page.add(&editor_group);
-
-    // --- Справка ---
-    // Отдельная группа, чтобы справочник по правилам не терялся среди
-    // настроек редактора и был доступен даже при выключенной проверке.
-    let help_group = adw::PreferencesGroup::builder()
-        .title(current_lang.pref_help_group_title())
-        .build();
-
-    let lint_help_row = adw::ActionRow::builder()
-        .title(current_lang.pref_lint_rules_title())
-        .subtitle(current_lang.pref_lint_rules_subtitle())
-        .activatable(true)
-        .build();
-    lint_help_row.add_suffix(&gtk4::Image::from_icon_name("go-next-symbolic"));
-
-    {
-        // Слабая ссылка на главное окно: строка настроек не должна
-        // удерживать окно приложения после закрытия.
-        let parent_for_help = parent.downgrade();
-        lint_help_row.connect_activated(move |_| {
-            if let Some(parent) = parent_for_help.upgrade() {
-                show_lint_help_window(&parent, current_lang, None);
-            }
-        });
-    }
-    help_group.add(&lint_help_row);
-    page.add(&help_group);
 
     // --- Шрифты ---
     let fonts_group = adw::PreferencesGroup::builder()

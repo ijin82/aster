@@ -28,7 +28,6 @@ use std::time::Duration;
 use super::Document;
 use crate::external::open_uri;
 use crate::i18n::Language;
-use crate::lint_rules::docs_url;
 
 /// Задержка перед повторной проверкой после последней правки.
 ///
@@ -48,7 +47,7 @@ const ERROR_TAG: &str = "lint-error";
 /// Стилевые правила — предупреждения; ошибкой помечается только нарушение
 /// структуры документа с несколькими заголовками первого уровня (MD025).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Severity {
+pub(super) enum Severity {
     Warning,
     Error,
 }
@@ -58,7 +57,7 @@ pub(crate) enum Severity {
 /// Номер совпадает с названием правила в `markdownlint`, поэтому
 /// пользователь может найти подробное описание в документации линтера.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Rule {
+pub(super) enum Rule {
     /// MD009 — пробелы в конце строки.
     Md009,
     /// MD010 — символ табуляции.
@@ -80,24 +79,8 @@ pub(crate) enum Rule {
 }
 
 impl Rule {
-    /// Все поддерживаемые правила в порядке номеров.
-    ///
-    /// Массив используется справочником в окне справки и в тестах,
-    /// поэтому не зависит от порядка объявления вариантов enum.
-    pub(crate) const ALL: [Rule; 9] = [
-        Rule::Md009,
-        Rule::Md010,
-        Rule::Md012,
-        Rule::Md022,
-        Rule::Md025,
-        Rule::Md031,
-        Rule::Md032,
-        Rule::Md040,
-        Rule::Md047,
-    ];
-
     /// Возвращает идентификатор правила в виде `MDxxx`.
-    pub(crate) fn id(self) -> &'static str {
+    pub(super) fn id(self) -> &'static str {
         match self {
             Rule::Md009 => "MD009",
             Rule::Md010 => "MD010",
@@ -112,12 +95,31 @@ impl Rule {
     }
 
     /// Важность нарушения.
-    pub(crate) fn severity(self) -> Severity {
+    pub(super) fn severity(self) -> Severity {
         match self {
             // Несколько H1 ломают структуру документа и оглавление,
             // поэтому это единственная «ошибка» среди стилевых правил.
             Rule::Md025 => Severity::Error,
             _ => Severity::Warning,
+        }
+    }
+
+    /// Ссылка на официальную страницу правила.
+    ///
+    /// Правый клик по диагностике открывает её сразу, без промежуточных
+    /// меню и диалогов: в приложении остаётся только та документация,
+    /// которую поддерживает markdownlint.
+    fn docs_url(self) -> &'static str {
+        match self {
+            Rule::Md009 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md009.md",
+            Rule::Md010 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md010.md",
+            Rule::Md012 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md012.md",
+            Rule::Md022 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md022.md",
+            Rule::Md025 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md025.md",
+            Rule::Md031 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md031.md",
+            Rule::Md032 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md032.md",
+            Rule::Md040 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md040.md",
+            Rule::Md047 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md047.md",
         }
     }
 
@@ -291,15 +293,12 @@ impl Document {
             });
     }
 
-    /// Подключает контекстное меню диагностики по правой кнопке мыши.
+    /// Открывает документацию правила по правой кнопке мыши.
     ///
-    /// ПКМ по подчёркнутому фрагменту открывает небольшой поповер:
-    /// - «Подробнее…» — окно справки на нужном правиле;
-    /// - «Документация markdownlint» — страница правила в браузере.
-    ///
-    /// Поповер создаётся заново на каждый клик. Он живёт только пока
-    /// показан, а `connect_closed` снимает его с родителя, чтобы не
-    /// оставлять скрытых виджетов в иерархии TextView.
+    /// Никаких поповеров и дополнительных окон: ПКМ по подчёркнутому
+    /// фрагменту сразу запускает браузер со страницей markdownlint.
+    /// Такой сценарий не создаёт вложенных GTK-виджетов и не может
+    /// заблокировать редактор, если пользователь передумал.
     pub(super) fn setup_lint_context_menu(self: &Rc<Self>) {
         let gesture = gtk4::GestureClick::new();
         gesture.set_button(3);
@@ -328,81 +327,17 @@ impl Document {
                     .map(|diagnostic| diagnostic.rule)
             };
 
-            // ПКМ по обычному тексту не должна перехватываться: в будущем
-            // здесь может появиться меню копирования/вставки.
+            // ПКМ по обычному тексту не перехватываем: в будущем здесь
+            // может появиться штатное меню копирования/вставки.
             let Some(rule) = rule else {
                 gesture.set_state(gtk4::EventSequenceState::Denied);
                 return;
             };
 
-            let lang = Language::from_code(&doc.settings.borrow().language);
-
-            let popover = gtk4::Popover::new();
-            popover.set_parent(view);
-            popover.set_has_arrow(true);
-            popover.set_position(gtk4::PositionType::Bottom);
-            popover.set_pointing_to(Some(&gdk::Rectangle::new(
-                x as i32,
-                y as i32,
-                1,
-                1,
-            )));
-
-            let content = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
-            content.set_margin_top(12);
-            content.set_margin_bottom(12);
-            content.set_margin_start(12);
-            content.set_margin_end(12);
-
-            let title = gtk4::Label::new(Some(&format!(
-                "{} · {}",
-                rule.id(),
-                lang.lint_message(rule.id())
-            )));
-            title.set_xalign(0.0);
-            title.set_wrap(true);
-            title.set_max_width_chars(48);
-            title.add_css_class("heading");
-            content.append(&title);
-
-            let details_button = popover_button(lang.lint_details());
-            content.append(&details_button);
-
-            let docs_button = popover_button(lang.lint_open_docs());
-            content.append(&docs_button);
-
-            popover.set_child(Some(&content));
-
-            let popover_for_details = popover.clone();
-            let weak_doc_for_details = weak_doc.clone();
-            details_button.connect_clicked(move |_| {
-                popover_for_details.popdown();
-
-                if let Some(doc) = weak_doc_for_details.upgrade() {
-                    let handler = doc.lint_help_handler.borrow().clone();
-                    if let Some(handler) = handler {
-                        handler(rule);
-                    }
-                }
-            });
-
-            let uri = docs_url(rule);
-            docs_button.connect_clicked(move |_| open_uri(uri));
-
-            popover.connect_closed(|popover| popover.unparent());
-            popover.popup();
+            open_uri(rule.docs_url());
         });
 
         self.text_view.add_controller(gesture);
-    }
-
-    /// Устанавливает обработчик, который окно использует для открытия
-    /// подробной справки по правилу.
-    ///
-    /// Document не знает об окне приложения: он лишь хранит callback,
-    /// поэтому документ можно создавать и тестировать без главного окна.
-    pub fn set_lint_help_handler(&self, handler: Rc<dyn Fn(Rule)>) {
-        *self.lint_help_handler.borrow_mut() = Some(handler);
     }
 
     /// Планирует проверку после последней правки.
@@ -941,21 +876,4 @@ fn list_item_indent(line: &str) -> Option<usize> {
     }
 
     None
-}
-
-/// Создаёт плоскую кнопку для поповера диагностики.
-///
-/// Текст выровнен по левому краю и переносится по словам: пункты меню
-/// могут быть длинными на русском языке.
-fn popover_button(text: &str) -> gtk4::Button {
-    let button = gtk4::Button::new();
-    button.add_css_class("flat");
-
-    let label = gtk4::Label::new(Some(text));
-    label.set_xalign(0.0);
-    label.set_wrap(true);
-    label.set_hexpand(true);
-    button.set_child(Some(&label));
-
-    button
 }
