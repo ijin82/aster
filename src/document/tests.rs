@@ -720,3 +720,53 @@ fn test_lint_md026_trailing_punctuation_in_heading() {
     // Внутри блока кода заголовок не проверяется.
     assert!(validate("```md\n## Heading;\n```\n").is_empty());
 }
+
+#[test]
+fn test_lint_heading_formatting_rules() {
+    // MD018 — нет пробела после решётки.
+    let diagnostics = validate("#Heading\n");
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].rule, Rule::Md018);
+
+    // MD019 — несколько пробелов после решётки.
+    let diagnostics = validate("#  Heading\n");
+    assert!(diagnostics.iter().any(|d| d.rule == Rule::Md019));
+    assert!(!diagnostics.iter().any(|d| d.rule == Rule::Md018));
+
+    // MD020 — нет пробела перед закрывающими решётками.
+    let diagnostics = validate("# Heading#\n");
+    assert!(diagnostics.iter().any(|d| d.rule == Rule::Md020));
+
+    // MD021 — несколько пробелов внутри закрытых решёток.
+    let diagnostics = validate("#  Heading  #\n");
+    assert!(diagnostics.iter().any(|d| d.rule == Rule::Md021));
+
+    // Корректный закрытый заголовок не должен давать MD020/MD021.
+    let diagnostics = validate("# Heading #\n");
+    assert!(!diagnostics
+        .iter()
+        .any(|d| matches!(d.rule, Rule::Md020 | Rule::Md021)));
+
+    // MD023 — заголовок с отступом.
+    let diagnostics = validate("  # Heading\n");
+    assert!(diagnostics.iter().any(|d| d.rule == Rule::Md023));
+
+    // MD024 — повторяющийся текст заголовка.
+    let diagnostics = validate("# Same\n\n## Same\n");
+    let duplicates: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.rule == Rule::Md024)
+        .collect();
+    assert_eq!(duplicates.len(), 1);
+    assert_eq!(duplicates[0].line, 2);
+
+    // MD024 не срабатывает на разные заголовки.
+    assert!(!validate("# One\n\n## Two\n")
+        .iter()
+        .any(|d| d.rule == Rule::Md024));
+
+    // Внутри блока кода заголовки не проверяются.
+    assert!(!validate("```md\n#Heading\n```\n")
+        .iter()
+        .any(|d| d.rule == Rule::Md018));
+}

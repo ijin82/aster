@@ -616,9 +616,35 @@ impl Language {
                 Language::Russian => "Несколько пустых строк подряд",
                 Language::English => "Multiple consecutive blank lines",
             },
+            "MD018" => match self {
+                Language::Russian => "Нет пробела после решётки в заголовке",
+                Language::English => "No space after hash in heading",
+            },
+            "MD019" => match self {
+                Language::Russian => "Несколько пробелов после решётки в заголовке",
+                Language::English => "Multiple spaces after hash in heading",
+            },
+            "MD020" => match self {
+                Language::Russian => "Нет пробела внутри решёток закрытого заголовка",
+                Language::English => "No space inside hashes in closed heading",
+            },
+            "MD021" => match self {
+                Language::Russian => {
+                    "Несколько пробелов внутри решёток закрытого заголовка"
+                }
+                Language::English => "Multiple spaces inside hashes in closed heading",
+            },
             "MD022" => match self {
                 Language::Russian => "Заголовок должен быть окружён пустыми строками",
                 Language::English => "Headings should be surrounded by blank lines",
+            },
+            "MD023" => match self {
+                Language::Russian => "Заголовок должен начинаться с начала строки",
+                Language::English => "Headings must start at the beginning of the line",
+            },
+            "MD024" => match self {
+                Language::Russian => "В документе есть заголовки с одинаковым текстом",
+                Language::English => "Multiple headings with the same content",
             },
             "MD025" => match self {
                 Language::Russian => {

@@ -7,7 +7,7 @@
 //! - не выставляет флаг «есть несохранённые изменения»;
 //! - может быть полностью выключен без изменения документа.
 //!
-//! Реализованы правила MD009, MD010, MD012, MD022, MD025, MD026, MD031,
+//! Реализованные правила: MD009, MD010, MD012, MD018–MD026, MD031,
 //! MD032, MD040 и MD047. Это подмножество `markdownlint`, которое не
 //! требует конфигурации и не даёт спорных предупреждений о вкусе разметки.
 //!
@@ -23,6 +23,7 @@
 use gtk4::prelude::*;
 use gtk4::{gdk, glib, pango};
 use std::cell::Cell;
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -72,8 +73,20 @@ pub(super) enum Rule {
     Md010,
     /// MD012 — несколько пустых строк подряд.
     Md012,
+    /// MD018 — нет пробела после решёток ATX-заголовка.
+    Md018,
+    /// MD019 — несколько пробелов после решёток ATX-заголовка.
+    Md019,
+    /// MD020 — нет пробела внутри решёток закрытого ATX-заголовка.
+    Md020,
+    /// MD021 — несколько пробелов внутри решёток закрытого ATX-заголовка.
+    Md021,
     /// MD022 — заголовок не окружён пустыми строками.
     Md022,
+    /// MD023 — заголовок начинается с отступа.
+    Md023,
+    /// MD024 — повторяющийся текст заголовка.
+    Md024,
     /// MD025 — больше одного заголовка первого уровня.
     Md025,
     /// MD026 — знак препинания в конце заголовка.
@@ -95,7 +108,13 @@ impl Rule {
             Rule::Md009 => "MD009",
             Rule::Md010 => "MD010",
             Rule::Md012 => "MD012",
+            Rule::Md018 => "MD018",
+            Rule::Md019 => "MD019",
+            Rule::Md020 => "MD020",
+            Rule::Md021 => "MD021",
             Rule::Md022 => "MD022",
+            Rule::Md023 => "MD023",
+            Rule::Md024 => "MD024",
             Rule::Md025 => "MD025",
             Rule::Md026 => "MD026",
             Rule::Md031 => "MD031",
@@ -125,7 +144,13 @@ impl Rule {
             Rule::Md009 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md009.md",
             Rule::Md010 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md010.md",
             Rule::Md012 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md012.md",
+            Rule::Md018 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md018.md",
+            Rule::Md019 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md019.md",
+            Rule::Md020 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md020.md",
+            Rule::Md021 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md021.md",
             Rule::Md022 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md022.md",
+            Rule::Md023 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md023.md",
+            Rule::Md024 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md024.md",
             Rule::Md025 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md025.md",
             Rule::Md026 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md026.md",
             Rule::Md031 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md031.md",
@@ -283,17 +308,15 @@ impl Document {
 
                 let message = {
                     let diagnostics = doc.diagnostics.borrow();
-                    diagnostic_at(&diagnostics, iter.line(), iter.line_offset()).map(
-                        |diagnostic| {
-                            let lang = Language::from_code(&doc.settings.borrow().language);
-                            format!(
-                                "{} — {}\n{}",
-                                diagnostic.rule.id(),
-                                lang.lint_message(diagnostic.rule.id()),
-                                lang.lint_tooltip_hint()
-                            )
-                        },
-                    )
+                    diagnostic_at(&diagnostics, iter.line(), iter.line_offset()).map(|diagnostic| {
+                        let lang = Language::from_code(&doc.settings.borrow().language);
+                        format!(
+                            "{} — {}\n{}",
+                            diagnostic.rule.id(),
+                            lang.lint_message(diagnostic.rule.id()),
+                            lang.lint_tooltip_hint()
+                        )
+                    })
                 };
 
                 let Some(message) = message else {
@@ -651,16 +674,102 @@ pub(super) fn validate(text: &str) -> Vec<Diagnostic> {
         push_blank_run(&mut result, start, line_count);
     }
 
-    // --- MD022, MD025 и MD026: заголовки ATX ---
+    // --- MD018–MD026: заголовки ATX ---
     let mut first_level_seen = false;
+    let mut heading_texts: HashSet<String> = HashSet::new();
+
     for (index, line) in lines.iter().enumerate() {
         if is_code[index] {
             continue;
         }
 
-        let Some((level, content_start, content_end)) = atx_heading_parts(line) else {
+        let Some(heading) = inspect_atx_heading(line) else {
             continue;
         };
+
+        let level = heading.level;
+        let content = &line[heading.content_start..heading.content_end];
+
+        // MD018: после решёток сразу идёт текст, без разделителя.
+        if !line[heading.opening_end..].is_empty() && heading.opening_spaces == 0 {
+            result.push(Diagnostic::new(
+                Rule::Md018,
+                index,
+                heading.indent as i32,
+                heading.opening_end as i32,
+            ));
+        }
+
+        // MD019: больше одного пробела/таба после решёток.
+        if heading.opening_spaces >= 2 {
+            result.push(Diagnostic::new(
+                Rule::Md019,
+                index,
+                heading.opening_end as i32,
+                (heading.opening_end + heading.opening_spaces) as i32,
+            ));
+        }
+
+        // MD020 и MD021 применяются только к закрытому ATX-стилю
+        // (`# Заголовок #`), где решётки есть с обеих сторон.
+        if let Some(closing_start) = heading.closing_start {
+            let opening_missing_space =
+                !line[heading.opening_end..].is_empty() && heading.opening_spaces == 0;
+            let closing_missing_space = heading.closing_spaces == 0;
+
+            if opening_missing_space || closing_missing_space {
+                let (start_col, end_col) = if closing_missing_space {
+                    (closing_start, heading.closing_end)
+                } else {
+                    (heading.indent, heading.opening_end)
+                };
+                result.push(Diagnostic::new(
+                    Rule::Md020,
+                    index,
+                    start_col as i32,
+                    end_col as i32,
+                ));
+            }
+
+            if heading.opening_spaces >= 2 || heading.closing_spaces >= 2 {
+                let (start_col, end_col) = if heading.closing_spaces >= 2 {
+                    (closing_start - heading.closing_spaces, closing_start)
+                } else {
+                    (
+                        heading.opening_end,
+                        heading.opening_end + heading.opening_spaces,
+                    )
+                };
+                result.push(Diagnostic::new(
+                    Rule::Md021,
+                    index,
+                    start_col as i32,
+                    end_col as i32,
+                ));
+            }
+        }
+
+        // MD023: заголовок сдвинут от начала строки.
+        if heading.indent > 0 {
+            result.push(Diagnostic::new(
+                Rule::Md023,
+                index,
+                0,
+                heading.indent as i32,
+            ));
+        }
+
+        // MD024: повторяющийся текст заголовка. Номер уровня не важен:
+        // по умолчанию markdownlint проверяет весь документ.
+        let normalized = content.trim();
+        if !normalized.is_empty() && !heading_texts.insert(normalized.to_string()) {
+            result.push(Diagnostic::new(
+                Rule::Md024,
+                index,
+                0,
+                char_len(line).max(1),
+            ));
+        }
 
         let missing_before = index > 0 && !lines[index - 1].trim().is_empty();
         let missing_after = index + 1 < line_count && !lines[index + 1].trim().is_empty();
@@ -688,10 +797,9 @@ pub(super) fn validate(text: &str) -> Vec<Diagnostic> {
         }
 
         // MD026: последний видимый символ заголовка не должен быть
-        // знаком препинания. Закрывающие решётки (`## Заголовок ##`)
-        // уже отрезаны в atx_heading_parts, поэтому они не мешают.
-        if content_end > content_start {
-            let content = &line[content_start..content_end];
+        // знаком препинания. Закрывающие решётки уже отрезаны, поэтому
+        // они не мешают.
+        if heading.content_end > heading.content_start {
             let Some(last_char) = content.chars().next_back() else {
                 continue;
             };
@@ -699,7 +807,7 @@ pub(super) fn validate(text: &str) -> Vec<Diagnostic> {
             if MD026_PUNCTUATION.contains(last_char)
                 && !(last_char == ';' && ends_with_html_entity(content))
             {
-                let punctuation_start = content_end - last_char.len_utf8();
+                let punctuation_start = heading.content_end - last_char.len_utf8();
                 let start_col = char_index(line, punctuation_start);
                 result.push(Diagnostic::new(
                     Rule::Md026,
@@ -969,15 +1077,31 @@ fn is_closing_fence(line: &str, marker: char, min_length: usize) -> bool {
     length >= min_length && rest[length..].trim().is_empty()
 }
 
-/// Разбирает заголовок ATX и возвращает его уровень и границы текста.
+/// Данные ATX-заголовка, нужные правилам MD018–MD026.
+struct AtxHeading {
+    level: u8,
+    /// Количество пробелов перед первой решёткой.
+    indent: usize,
+    /// Байтовый индекс сразу после открывающих решёток.
+    opening_end: usize,
+    /// Количество пробелов/табов между решётками и текстом.
+    opening_spaces: usize,
+    /// Начало закрывающих решёток, если заголовок закрытый.
+    closing_start: Option<usize>,
+    /// Конец закрывающих решёток.
+    closing_end: usize,
+    /// Количество пробелов/табов перед закрывающими решётками.
+    closing_spaces: usize,
+    /// Границы текста заголовка без решёток и окружающих пробелов.
+    content_start: usize,
+    content_end: usize,
+}
+
+/// Разбирает ATX-заголовок, включая некорректно оформленные варианты.
 ///
-/// Границы нужны MD026, чтобы подчеркнуть последний видимый символ,
-/// не задевая закрывающие решётки. Заголовком считается только строка,
-/// где после решёток стоит пробел, таб или конец строки: `#hashtag`
-/// остаётся обычным текстом.
-///
-/// Возвращает `(уровень, начало_текста, конец_текста)` в байтах строки.
-fn atx_heading_parts(line: &str) -> Option<(u8, usize, usize)> {
+/// В отличие от строгого CommonMark, здесь `#Heading` и `# Heading #`
+/// тоже считаются кандидатами: именно их проверяют MD018–MD021.
+fn inspect_atx_heading(line: &str) -> Option<AtxHeading> {
     let indent = line.chars().take_while(|ch| *ch == ' ').count();
     if indent > 3 {
         return None;
@@ -989,28 +1113,61 @@ fn atx_heading_parts(line: &str) -> Option<(u8, usize, usize)> {
         return None;
     }
 
-    let after = &rest[level..];
-    if !(after.is_empty() || after.starts_with(' ') || after.starts_with('\t')) {
-        return None;
-    }
+    let opening_end = indent + level;
+    let after = &line[opening_end..];
+    let opening_spaces = after
+        .chars()
+        .take_while(|ch| *ch == ' ' || *ch == '\t')
+        .count();
 
-    // Обрезаем пробелы вокруг содержимого, а затем — закрывающую
-    // последовательность решёток, если перед ней есть пробел.
-    let leading = after.len() - after.trim_start().len();
-    let start = indent + level + leading;
-    let mut end = line.len() - (after.len() - after.trim_end().len());
+    let trimmed_end = line.trim_end().len();
+    let mut closing_start = None;
+    let mut closing_end = trimmed_end;
+    let mut closing_spaces = 0;
+    let mut content_start = opening_end + opening_spaces;
+    let mut content_end = trimmed_end;
 
-    if end > start && line[start..end].ends_with('#') {
-        let hash_run_start = start + line[start..end].trim_end_matches('#').len();
-        let is_closing_sequence =
-            hash_run_start == start || line[start..hash_run_start].ends_with(char::is_whitespace);
+    if trimmed_end > opening_end && line[..trimmed_end].ends_with('#') {
+        let closing_run = line[..trimmed_end]
+            .bytes()
+            .rev()
+            .take_while(|byte| *byte == b'#')
+            .count();
+        let run_start = trimmed_end - closing_run;
 
-        if is_closing_sequence {
-            end = start + line[start..hash_run_start].trim_end().len();
+        // Если это та же серия решёток, что и открывающая, закрывающих
+        // решёток нет: `####` — просто пустой заголовок.
+        if run_start > opening_end {
+            closing_start = Some(run_start);
+            closing_end = trimmed_end;
+
+            let mut spacing_start = run_start;
+            while spacing_start > opening_end
+                && matches!(line.as_bytes()[spacing_start - 1], b' ' | b'\t')
+            {
+                spacing_start -= 1;
+            }
+
+            closing_spaces = run_start - spacing_start;
+            content_end = spacing_start;
         }
     }
 
-    Some((level as u8, start, end))
+    if content_start > content_end {
+        content_start = content_end;
+    }
+
+    Some(AtxHeading {
+        level: level as u8,
+        indent,
+        opening_end,
+        opening_spaces,
+        closing_start,
+        closing_end,
+        closing_spaces,
+        content_start,
+        content_end,
+    })
 }
 
 /// Проверяет, что текст заканчивается HTML-сущностью (`&copy;`, `&#169;`).
