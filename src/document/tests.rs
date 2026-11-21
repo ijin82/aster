@@ -991,7 +991,6 @@ fn test_format_selection_wraps_and_preserves_inner_selection() {
     for (open, close, expected) in [
         ("**", "**", "**hello**"),
         ("*", "*", "*hello*"),
-        ("_", "_", "_hello_"),
         ("`", "`", "`hello`"),
     ] {
         let settings = Rc::new(RefCell::new(AppSettings::default()));

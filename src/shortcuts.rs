@@ -150,7 +150,6 @@ pub fn ctrl_shortcut_action(key: char, shift: bool) -> Option<&'static str> {
             'r' => Some("win.find_replace"),
             'b' => Some("win.format_bold"),
             'i' => Some("win.format_italic"),
-            'u' => Some("win.format_underline"),
             '`' => Some("win.format_code"),
             ',' => Some("win.preferences"),
             'q' => Some("win.close"),
@@ -225,10 +224,6 @@ mod tests {
         );
         assert_eq!(ctrl_shortcut_action('b', false), Some("win.format_bold"));
         assert_eq!(ctrl_shortcut_action('i', false), Some("win.format_italic"));
-        assert_eq!(
-            ctrl_shortcut_action('u', false),
-            Some("win.format_underline")
-        );
         assert_eq!(ctrl_shortcut_action('u', true), Some("win.cycle_case"));
         assert_eq!(ctrl_shortcut_action('`', false), Some("win.format_code"));
         assert_eq!(ctrl_shortcut_action('x', false), None);

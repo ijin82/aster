@@ -311,11 +311,6 @@ pub(crate) fn install_actions(ctx: ActionContext) -> gio::SimpleActionGroup {
             doc.wrap_selection("*", "*");
         }
     });
-    add_document_action(&actions, "format_underline", &docs, &tab_view, |doc| {
-        if doc.text_view.has_focus() {
-            doc.wrap_selection("_", "_");
-        }
-    });
     add_document_action(&actions, "format_code", &docs, &tab_view, |doc| {
         if doc.text_view.has_focus() {
             doc.wrap_selection("`", "`");
