@@ -29,7 +29,10 @@ mod style;
 mod tabs;
 
 use actions::{install_actions, ActionContext};
-use dialogs::{save_document, save_documents_sequentially, show_unsaved_changes_dialog};
+use dialogs::{
+    save_document, save_documents_sequentially, show_file_conflict_dialog,
+    show_unsaved_changes_dialog, FileConflictChoice,
+};
 use menus::{rebuild_main_menu, rebuild_tab_menu};
 use style::{apply_color_scheme, apply_editor_style_css, disable_sound_feedback};
 use tabs::{active_document, parent_directory};
@@ -270,8 +273,9 @@ pub fn build_window(
         let search_btn = search_btn.clone();
         let show_toast = show_toast.clone();
         let settings_for_error = settings.clone();
+        // Слабая ссылка: конфликтный диалог не должен удерживать окно.
+        let window_for_conflict = window.downgrade();
         let last_open_directory = last_open_directory.clone();
-        let toast_overlay_for_file = toast_overlay.clone();
         let docs_for_recovery = Rc::downgrade(&docs);
         let recovery_scheduled_for_change = recovery_scheduled.clone();
         let persist_for_file = Rc::downgrade(&persist_session);
@@ -327,12 +331,12 @@ pub fn build_window(
             let settings_for_file = settings.clone();
             let refresh_for_file = Rc::downgrade(&refresh_active_ui);
             let show_toast_for_file = show_toast.clone();
-            let toast_overlay_for_conflict = toast_overlay_for_file.clone();
             let persist_for_file = persist_for_file.clone();
+            let window_for_conflict = window_for_conflict.clone();
             // Флаг живёт вместе с документом: конфликт в одной вкладке
-            // не должен заглушать уведомление о конфликте в другой.
-            let conflict_toast_visible = Rc::new(Cell::new(false));
-            let conflict_toast_for_file = conflict_toast_visible.clone();
+            // не должен открывать второй диалог, пока первый не закрыт.
+            let conflict_dialog_visible = Rc::new(Cell::new(false));
+            let conflict_dialog_for_file = conflict_dialog_visible.clone();
             doc.watch_file(Rc::new(move |change| {
                 let Some(doc) = weak_doc_for_file.upgrade() else {
                     return;
@@ -354,27 +358,38 @@ pub fn build_window(
                         }
                     }
                     FileChange::Conflict => {
-                        if conflict_toast_for_file.get() {
+                        if conflict_dialog_for_file.get() {
                             return;
                         }
-                        conflict_toast_for_file.set(true);
 
-                        let toast = adw::Toast::new(lang.file_changed_on_disk());
-                        toast.set_button_label(Some(lang.btn_reload()));
+                        let Some(window) = window_for_conflict.upgrade() else {
+                            return;
+                        };
+                        conflict_dialog_for_file.set(true);
 
-                        let visible_after_dismiss = conflict_toast_for_file.clone();
-                        toast.connect_dismissed(move |_| {
-                            visible_after_dismiss.set(false);
-                        });
+                        let file_name = doc
+                            .current_file
+                            .borrow()
+                            .as_ref()
+                            .and_then(|path| path.file_name())
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("document.md")
+                            .to_string();
 
+                        let flag_for_dialog = conflict_dialog_for_file.clone();
                         let doc_for_reload = doc.clone();
-                        let overlay_for_reload = toast_overlay_for_conflict.clone();
                         let refresh_for_reload = refresh_for_file.clone();
                         let persist_for_reload = persist_for_file.clone();
                         let show_toast_for_reload = show_toast_for_file.clone();
                         let settings_for_reload = settings_for_file.clone();
 
-                        toast.connect_button_clicked(move |_| {
+                        show_file_conflict_dialog(&window, lang, &file_name, move |choice| {
+                            flag_for_dialog.set(false);
+
+                            if choice == FileConflictChoice::KeepEditing {
+                                return;
+                            }
+
                             match doc_for_reload.reload_from_disk() {
                                 Ok(()) => {
                                     if let Some(refresh) = refresh_for_reload.upgrade() {
@@ -395,7 +410,6 @@ pub fn build_window(
                                 }
                             }
                         });
-                        overlay_for_reload.add_toast(toast);
                     }
                 }
             }));

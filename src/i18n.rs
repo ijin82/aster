@@ -318,10 +318,29 @@ impl Language {
         }
     }
 
-    pub fn btn_reload(&self) -> &'static str {
+    /// Текст диалога конфликта локальных и внешних правок.
+    pub fn file_conflict_body(&self, file_name: &str) -> String {
         match self {
-            Language::Russian => "Перезагрузить",
-            Language::English => "Reload",
+            Language::Russian => format!(
+                "Файл «{file_name}» был изменён другой программой, а в Aster есть несохранённые правки. Загрузить внешнюю версию и потерять свои изменения или продолжить редактирование?"
+            ),
+            Language::English => format!(
+                "The file \"{file_name}\" was changed by another program, and Aster has unsaved edits. Load the external version and lose your changes, or keep editing?"
+            ),
+        }
+    }
+
+    pub fn btn_load_external(&self) -> &'static str {
+        match self {
+            Language::Russian => "Загрузить внешнюю версию",
+            Language::English => "Load external version",
+        }
+    }
+
+    pub fn btn_keep_edits(&self) -> &'static str {
+        match self {
+            Language::Russian => "Продолжить редактирование",
+            Language::English => "Keep editing",
         }
     }
 

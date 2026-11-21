@@ -155,6 +155,57 @@ pub(crate) fn show_unsaved_changes_dialog<F1, F2, F3>(
     dialog.present();
 }
 
+/// Выбор пользователя при конфликте локальных и внешних правок.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileConflictChoice {
+    /// Загрузить версию с диска и потерять локальные правки.
+    LoadExternal,
+    /// Оставить локальные правки.
+    KeepEditing,
+}
+
+/// Показывает обязательный диалог конфликта файла.
+///
+/// У диалога нет кнопки отмены: пользователь выбирает между загрузкой
+/// внешней версии и продолжением редактирования. Esc и закрытие окна
+/// трактуются как безопасный вариант «продолжить редактирование»,
+/// поэтому локальные правки не теряются случайно.
+pub(crate) fn show_file_conflict_dialog<F>(
+    parent: &adw::ApplicationWindow,
+    lang: Language,
+    file_name: &str,
+    on_choice: F,
+) where
+    F: FnOnce(FileConflictChoice) + 'static,
+{
+    let dialog = adw::MessageDialog::builder()
+        .transient_for(parent)
+        .modal(true)
+        .heading(lang.file_changed_on_disk())
+        .body(lang.file_conflict_body(file_name))
+        .build();
+
+    dialog.add_response("keep", lang.btn_keep_edits());
+    dialog.add_response("load", lang.btn_load_external());
+    dialog.set_response_appearance("load", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("keep"));
+    dialog.set_close_response("keep");
+
+    let on_choice = RefCell::new(Some(on_choice));
+    dialog.connect_response(None, move |_, response| {
+        let choice = if response == "load" {
+            FileConflictChoice::LoadExternal
+        } else {
+            FileConflictChoice::KeepEditing
+        };
+        if let Some(callback) = on_choice.borrow_mut().take() {
+            callback(choice);
+        }
+    });
+
+    dialog.present();
+}
+
 /// Стандартное окно «О программе».
 pub(crate) fn show_about_dialog(parent: &adw::ApplicationWindow, lang: Language) {
     let about = adw::AboutWindow::builder()
