@@ -2,14 +2,26 @@
 
 Это пример документа Markdown для проверки рендеринга в стиле **GitHub**.
 
-## 1. Списки задач (GFM Task Lists)
+## 1. Списки задач (GFM Task Lists);
+
 - [x] Инициализация проекта GTK4 + Libadwaita
 - [x] Интеграция WebKitGTK с `github-markdown-css`
 - [x] Поддержка светлой и темной темы
 - [x] Поиск по тексту (`Ctrl+F`)
 - [ ] Экспорт в PDF / HTML
 
+> [!TIP]
+> tip tip tip
+
+> [!CAUTION]
+> caution caution caution
+
+> [!WARNING]
+> WARNING *WARNING* **WARNING**
+
+
 ## 2. Таблицы
+
 | Функция | Горячая клавиша | Статус |
 | :--- | :---: | :--- |
 | Редактор / Предпросмотр | `Ctrl+Tab` | Готово |
@@ -20,6 +32,7 @@
 | Закрыть / Выход | `Ctrl+Q` / `Ctrl+F4` | Готово |
 
 ## 3. Блок кода
+
 ```rust
 fn main() {
     println!("Hello from Aster with GTK4 and WebKitGTK!");

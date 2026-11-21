@@ -1,8 +1,8 @@
 # Aster ✳️
 
-![Иконка Aster](assets/aster.svg)
+![Aster](assets/aster.svg)
 
-**Русский** · [English](README_en.md)   
+**Русский** · [English](README_en.md)
 
 **Aster** — это обучающее легковесное приложение на **Rust**, **GTK4**, **Libadwaita** и **WebKitGTK 6.0** для просмотра и редактирования Markdown-документов в стиле GNOME.
 
@@ -153,7 +153,8 @@ rustup update
 
 Дополнительно для компиляции требуются заголовочные файлы библиотек GTK4, Libadwaita и WebKitGTK 6.0.
 
-#### ALT Linux:
+#### ALT Linux
+
 ```bash
 su -
 apt-get update
@@ -163,7 +164,8 @@ apt-get install -y \
     libwebkitgtk6.0-devel
 ```
 
-#### Fedora / RHEL:
+#### Fedora / RHEL
+
 ```bash
 sudo dnf install -y \
     gtk4-devel \
@@ -171,7 +173,8 @@ sudo dnf install -y \
     webkitgtk6.0-devel
 ```
 
-#### Ubuntu / Debian (24.04+):
+#### Ubuntu / Debian (24.04+)
+
 ```bash
 sudo apt update
 sudo apt install -y \
@@ -180,7 +183,8 @@ sudo apt install -y \
     libwebkitgtk-6.0-dev
 ```
 
-#### Arch Linux:
+#### Arch Linux
+
 ```bash
 sudo pacman -S --needed \
     gtk4 \
@@ -202,22 +206,30 @@ sudo pacman -S --needed \
 ## 🚀 Сборка бинарного файла и запуск
 
 ### 1. Отладочная сборка (Debug)
+
 Для быстрой компиляции и проверки во время разработки:
+
 ```bash
 cargo build
 ```
+
 Итоговый бинарник появится в `target/debug/aster`.
 
 ### 2. Релизная оптимизированная сборка (Release)
+
 Для получения максимальной скорости работы, отзывчивого интерфейса и минимального размера бинарника:
+
 ```bash
 cargo build --release
 ```
+
 Готовый исполняемый файл будет лежать в:
+
 ```bash
 target/release/aster
 ```
 
+> [!info]
 > **Совет по уменьшению размера бинарника (strip):**  
 > Чтобы убрать отладочные символы и сделать бинарник компактнее:
 > ```bash
