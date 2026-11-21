@@ -298,6 +298,35 @@ pub(crate) fn install_actions(ctx: ActionContext) -> gio::SimpleActionGroup {
     }
     actions.add_action(&preferences_action);
 
+    // Форматирование выделенного текста. Действия работают только
+    // с активной вкладкой; при отсутствии выделения методы ничего
+    // не меняют.
+    add_document_action(&actions, "format_bold", &docs, &tab_view, |doc| {
+        if doc.text_view.has_focus() {
+            doc.wrap_selection("**", "**");
+        }
+    });
+    add_document_action(&actions, "format_italic", &docs, &tab_view, |doc| {
+        if doc.text_view.has_focus() {
+            doc.wrap_selection("*", "*");
+        }
+    });
+    add_document_action(&actions, "format_underline", &docs, &tab_view, |doc| {
+        if doc.text_view.has_focus() {
+            doc.wrap_selection("_", "_");
+        }
+    });
+    add_document_action(&actions, "format_code", &docs, &tab_view, |doc| {
+        if doc.text_view.has_focus() {
+            doc.wrap_selection("`", "`");
+        }
+    });
+    add_document_action(&actions, "cycle_case", &docs, &tab_view, |doc| {
+        if doc.text_view.has_focus() {
+            doc.cycle_selection_case();
+        }
+    });
+
     let about_action = gio::SimpleAction::new("about", None);
     {
         let window = window.clone();
@@ -316,6 +345,27 @@ pub(crate) fn install_actions(ctx: ActionContext) -> gio::SimpleActionGroup {
     actions
 }
 
+
+/// Регистрирует действие, которое применяется к активному документу.
+fn add_document_action<F>(
+    actions: &gio::SimpleActionGroup,
+    name: &str,
+    docs: &Rc<RefCell<Vec<Rc<Document>>>>,
+    tab_view: &adw::TabView,
+    apply: F,
+) where
+    F: Fn(&Document) + 'static,
+{
+    let action = gio::SimpleAction::new(name, None);
+    let docs = docs.clone();
+    let tab_view = tab_view.clone();
+    action.connect_activate(move |_, _| {
+        if let Some(doc) = active_document(&tab_view, &docs) {
+            apply(&doc);
+        }
+    });
+    actions.add_action(&action);
+}
 
 /// Перехватывает Ctrl-комбинации и переводит hardware keycode в латинскую
 /// клавишу. Это делает хоткеи независимыми от активной раскладки.

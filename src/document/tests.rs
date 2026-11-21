@@ -985,3 +985,68 @@ fn test_modified_flag_is_relative_to_disk_after_external_change() {
     doc.recompute_modified();
     assert!(!doc.is_modified.get());
 }
+
+#[gtk4::test]
+fn test_format_selection_wraps_and_preserves_inner_selection() {
+    for (open, close, expected) in [
+        ("**", "**", "**hello**"),
+        ("*", "*", "*hello*"),
+        ("_", "_", "_hello_"),
+        ("`", "`", "`hello`"),
+    ] {
+        let settings = Rc::new(RefCell::new(AppSettings::default()));
+        let doc = Document::new(settings, None, false).expect("create document");
+        doc.buffer.set_text("hello");
+
+        let start = doc.buffer.iter_at_offset(0);
+        let end = doc.buffer.iter_at_offset(5);
+        doc.buffer.select_range(&start, &end);
+
+        doc.wrap_selection(open, close);
+
+        let full = doc
+            .buffer
+            .text(&doc.buffer.start_iter(), &doc.buffer.end_iter(), false);
+        assert_eq!(full.as_str(), expected);
+
+        let (selected_start, selected_end) =
+            doc.buffer.selection_bounds().expect("selection remains");
+        let selected = doc.buffer.text(&selected_start, &selected_end, false);
+        assert_eq!(selected.as_str(), "hello");
+    }
+}
+
+#[gtk4::test]
+fn test_cycle_selection_case() {
+    let settings = Rc::new(RefCell::new(AppSettings::default()));
+    let doc = Document::new(settings, None, false).expect("create document");
+    doc.buffer.set_text("qWeRtY");
+
+    let start = doc.buffer.iter_at_offset(0);
+    let end = doc.buffer.iter_at_offset(6);
+    doc.buffer.select_range(&start, &end);
+
+    doc.cycle_selection_case();
+    assert_eq!(doc.buffer.text(&doc.buffer.start_iter(), &doc.buffer.end_iter(), false).as_str(), "QWERTY");
+
+    doc.cycle_selection_case();
+    assert_eq!(doc.buffer.text(&doc.buffer.start_iter(), &doc.buffer.end_iter(), false).as_str(), "qwerty");
+}
+
+#[gtk4::test]
+fn test_format_selection_is_one_undo_step() {
+    let settings = Rc::new(RefCell::new(AppSettings::default()));
+    let doc = Document::new(settings, None, false).expect("create document");
+    doc.buffer.set_text("hello");
+
+    let start = doc.buffer.iter_at_offset(0);
+    let end = doc.buffer.iter_at_offset(5);
+    doc.buffer.select_range(&start, &end);
+    doc.wrap_selection("**", "**");
+
+    doc.buffer.undo();
+    let text = doc
+        .buffer
+        .text(&doc.buffer.start_iter(), &doc.buffer.end_iter(), false);
+    assert_eq!(text.as_str(), "hello");
+}

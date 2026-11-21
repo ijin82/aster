@@ -22,6 +22,7 @@ The main goal of the project is to serve as a clear, practical guide to building
   - Full color scheme support in the editor (background, text color, caret color, and highlight token colors match the selected theme).
   - Configurable monospace font family, soft line wrapping, and padding.
   - **Quick line indentation (`Tab` / `Shift+Tab`)**: when text is selected, pressing `Tab` adds two spaces to the beginning of each selected line, while `Shift+Tab` removes up to two spaces from the beginning of the lines (preserving selection boundaries and supporting undo with `Ctrl+Z`).
+  - **Selection formatting**: `Ctrl+B` wraps the selection in `**bold**`, `Ctrl+I` in `*italic*`, `Ctrl+U` in `_emphasis_` (Markdown renders this as italic, not underline), and ``Ctrl+` `` in `` `code` ``. `Ctrl+Shift+U` cycles the case: `qWeRtY → QWERTY → qwerty`. With no selection the commands do nothing, and each change is a single undo step.
   - **Duplicate line `Alt+D`**: a copy of the line under the cursor is inserted below, and the cursor moves to the copy in the same column.
   - **Line-by-line scrolling (`Ctrl+Shift+↑` / `Ctrl+Shift+↓`)**: scrolls the editor one visible line up or down without moving the cursor or changing the selection. With soft wrap enabled, the height of a single visual row is used.
   - **Whitespace display toggle (`Ctrl+Shift+P`)**: enables or disables whitespace and tab markers only. Soft wrap is toggled separately with `Ctrl+Shift+W`, so the two modes do not affect each other.
@@ -253,8 +254,8 @@ To install icons in PNG formats, the script uses `rsvg-convert` or Python bindin
 ### 4. Building the release archive
 
 ```bash
-# Prepare a v0.10.0 release with one command
-./package-release.sh v0.10.0
+# Prepare a v0.11.0 release with one command
+./package-release.sh v0.11.0
 
 # Without an argument, the current version from VERSION is used
 ./package-release.sh

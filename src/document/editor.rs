@@ -466,3 +466,85 @@ fn leading_indent_chars(start: &gtk4::TextIter, indent_width: i32) -> i32 {
     }
     count
 }
+
+impl super::Document {
+    /// Оборачивает выделение парой маркеров Markdown.
+    ///
+    /// Если выделения нет или открыт предпросмотр, ничего не делает.
+    /// После вставки выделение остаётся на исходном тексте внутри
+    /// маркеров, чтобы следующая команда форматирования применялась
+    /// к тому же фрагменту.
+    pub fn wrap_selection(&self, prefix: &str, suffix: &str) {
+        if self.is_preview_active.get() {
+            return;
+        }
+
+        let Some(text) = self.selected_text() else {
+            return;
+        };
+        if text.is_empty() {
+            return;
+        }
+
+        let replacement = format!("{prefix}{text}{suffix}");
+        let select_start = prefix.chars().count();
+        let select_len = text.chars().count();
+        self.replace_selection(&replacement, select_start, select_len);
+    }
+
+    /// Меняет регистр выделения по кругу: строчные → заглавные →
+    /// строчные. Для смешанного текста первое нажатие делает заглавные.
+    pub fn cycle_selection_case(&self) {
+        if self.is_preview_active.get() {
+            return;
+        }
+
+        let Some(text) = self.selected_text() else {
+            return;
+        };
+        if text.is_empty() {
+            return;
+        }
+
+        let has_lowercase = text.chars().any(char::is_lowercase);
+        let replacement = if has_lowercase {
+            text.to_uppercase()
+        } else {
+            text.to_lowercase()
+        };
+
+        self.replace_selection(&replacement, 0, replacement.chars().count());
+    }
+
+    /// Возвращает текст текущего выделения или `None`.
+    fn selected_text(&self) -> Option<String> {
+        let (start, end) = self.buffer.selection_bounds()?;
+        Some(self.buffer.text(&start, &end, false).to_string())
+    }
+
+    /// Заменяет выделение и оставляет выделенным нужный фрагмент.
+    ///
+    /// Смещения считаются в символах: именно так работает
+    /// `GtkTextIter::offset`, в отличие от байтовых индексов `&str`.
+    fn replace_selection(&self, replacement: &str, select_start: usize, select_len: usize) {
+        let Some((mut start, mut end)) = self.buffer.selection_bounds() else {
+            return;
+        };
+
+        let start_offset = start.offset();
+
+        self.buffer.begin_user_action();
+        self.buffer.delete(&mut start, &mut end);
+
+        let mut insert = self.buffer.iter_at_offset(start_offset);
+        self.buffer.insert(&mut insert, replacement);
+
+        let selection_start = self.buffer.iter_at_offset(start_offset + select_start as i32);
+        let selection_end =
+            self.buffer.iter_at_offset(start_offset + (select_start + select_len) as i32);
+        self.buffer
+            .select_range(&selection_start, &selection_end);
+
+        self.buffer.end_user_action();
+    }
+}

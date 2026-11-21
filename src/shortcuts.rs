@@ -24,8 +24,8 @@ pub fn latin_char_for_keycode(keycode: u32) -> Option<char> {
                     if ch.is_ascii_alphabetic() {
                         return Some(ch.to_ascii_lowercase());
                     }
-                    if ch == ',' {
-                        return Some(',');
+                    if ch == ',' || ch == '`' {
+                        return Some(ch);
                     }
                 }
             }
@@ -81,6 +81,7 @@ fn static_char_evdev(keycode: u32) -> Option<char> {
         49 => 'n',
         50 => 'm',
         51 => ',',
+        41 => '`',
         15 => '\t',
         _ => return None,
     })
@@ -116,6 +117,7 @@ fn static_char_x11(keycode: u32) -> Option<char> {
         57 => 'n',
         58 => 'm',
         59 => ',',
+        49 => '`',
         23 => '\t',
         _ => return None,
     })
@@ -133,6 +135,7 @@ pub fn ctrl_shortcut_action(key: char, shift: bool) -> Option<&'static str> {
             'l' => Some("win.toggle_line_numbers"),
             'p' => Some("win.toggle_whitespace"),
             'w' => Some("win.toggle_soft_wrap"),
+            'u' => Some("win.cycle_case"),
             '\t' => Some("win.previous_tab"),
             _ => None,
         }
@@ -145,6 +148,10 @@ pub fn ctrl_shortcut_action(key: char, shift: bool) -> Option<&'static str> {
             'e' => Some("win.toggle_preview"),
             'f' => Some("win.find"),
             'r' => Some("win.find_replace"),
+            'b' => Some("win.format_bold"),
+            'i' => Some("win.format_italic"),
+            'u' => Some("win.format_underline"),
+            '`' => Some("win.format_code"),
             ',' => Some("win.preferences"),
             'q' => Some("win.close"),
             '\t' => Some("win.next_tab"),
@@ -162,9 +169,11 @@ mod tests {
         assert_eq!(static_char_evdev(32), Some('d'));
         assert_eq!(static_char_evdev(31), Some('s'));
         assert_eq!(static_char_evdev(59), None);
+        assert_eq!(static_char_evdev(41), Some('`'));
         assert_eq!(static_char_x11(40), Some('d'));
         assert_eq!(static_char_x11(39), Some('s'));
         assert_eq!(static_char_x11(32), Some('o'));
+        assert_eq!(static_char_x11(49), Some('`'));
     }
 
     #[gtk4::test]
@@ -214,6 +223,14 @@ mod tests {
             ctrl_shortcut_action('\t', true),
             Some("win.previous_tab")
         );
+        assert_eq!(ctrl_shortcut_action('b', false), Some("win.format_bold"));
+        assert_eq!(ctrl_shortcut_action('i', false), Some("win.format_italic"));
+        assert_eq!(
+            ctrl_shortcut_action('u', false),
+            Some("win.format_underline")
+        );
+        assert_eq!(ctrl_shortcut_action('u', true), Some("win.cycle_case"));
+        assert_eq!(ctrl_shortcut_action('`', false), Some("win.format_code"));
         assert_eq!(ctrl_shortcut_action('x', false), None);
     }
 }
