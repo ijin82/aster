@@ -19,6 +19,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::Duration;
 use webkit6::prelude::*;
 use webkit6::{
     UserContentInjectedFrames, UserContentManager, UserScript, UserScriptInjectionTime,
@@ -28,6 +29,9 @@ use crate::highlighter;
 use crate::i18n::Language;
 use crate::renderer;
 use crate::settings::{AppSettings, FileViewState};
+
+/// Обработчик изменения флага «есть несохранённые правки».
+type ModifiedHandler = Rc<dyn Fn()>;
 
 mod diagnostics;
 mod editor;
@@ -375,6 +379,15 @@ pub struct Document {
     diagnostics: Rc<RefCell<Vec<Diagnostic>>>,
     /// Таймер отложенной проверки стиля после последней правки.
     diagnostics_timeout: Cell<Option<glib::SourceId>>,
+    /// Хеш содержимого, с которым сравнивается текущий буфер.
+    ///
+    /// Это последняя известная версия файла на диске. `None` означает,
+    /// что базы нет (например, восстановленный черновик).
+    saved_content_hash: Cell<Option<u64>>,
+    /// Таймер отложенного пересчёта флага «есть несохранённые правки».
+    dirty_check_timeout: Cell<Option<glib::SourceId>>,
+    /// Callback окна для обновления кнопки сохранения и заголовка.
+    modified_handler: RefCell<Option<ModifiedHandler>>,
     /// Слой редактора, поверх которого показывается собственный tooltip.
     lint_tooltip_overlay: gtk4::Overlay,
     /// Карточка собственного tooltip линтера.
@@ -699,6 +712,9 @@ impl Document {
             bulk_editing: Cell::new(false),
             diagnostics,
             diagnostics_timeout: Cell::new(None),
+            saved_content_hash: Cell::new(Some(hash_text(""))),
+            dirty_check_timeout: Cell::new(None),
+            modified_handler: RefCell::new(None),
             lint_tooltip_overlay: editor_overlay.clone(),
             lint_tooltip,
             lint_tooltip_label,
@@ -755,7 +771,10 @@ impl Document {
         let weak_doc = Rc::downgrade(self);
         self.buffer.connect_changed(move |buf| {
             if let Some(doc) = weak_doc.upgrade() {
-                doc.is_modified.set(true);
+                // Сразу показываем точку и подсветку кнопки: сравнение
+                // с диском может быть отложено, но интерфейс должен
+                // реагировать мгновенно.
+                doc.set_modified_state(true);
 
                 // Во время массовой замены changed срабатывает на каждую
                 // правку. Полная подсветка 1.7-МБ файла на каждой из тысяч
@@ -764,6 +783,8 @@ impl Document {
                 if doc.bulk_editing.get() {
                     return;
                 }
+
+                doc.schedule_dirty_check();
 
                 doc.gutter.queue_draw();
                 doc.whitespace_area.queue_draw();
@@ -782,6 +803,26 @@ impl Document {
                 doc.update_tab_title();
             }
         });
+
+        // После undo/redo содержимое может снова совпасть с файлом на
+        // диске. Пересчитываем флаг отложенно, когда GTK уже применил
+        // действие к буферу.
+        {
+            let weak_doc = Rc::downgrade(self);
+            self.buffer.connect_undo(move |_| {
+                if let Some(doc) = weak_doc.upgrade() {
+                    doc.schedule_dirty_check_now();
+                }
+            });
+        }
+        {
+            let weak_doc = Rc::downgrade(self);
+            self.buffer.connect_redo(move |_| {
+                if let Some(doc) = weak_doc.upgrade() {
+                    doc.schedule_dirty_check_now();
+                }
+            });
+        }
 
         // 2. Запоминаем позицию прокрутки редактора при каждом изменении.
         //
@@ -900,11 +941,12 @@ impl Document {
         // Хеш текущего содержимого на диске: первое событие монитора
         // после открытия не должно выглядеть как внешнее изменение.
         *self.last_external_file_hash.borrow_mut() = Some(hash_text(&content));
+        self.saved_content_hash.set(Some(hash_text(&content)));
         // Файл загружен целиком — проверяем стиль сразу, не дожидаясь
         // дебаунса: пользователь должен увидеть проблемы при открытии.
         self.refresh_diagnostics();
         *self.current_file.borrow_mut() = Some(path.to_path_buf());
-        self.is_modified.set(false);
+        self.set_modified_state(false);
 
         // Восстанавливаем сохраненные позиции прокрутки. Предпросмотр
         // перерисуется лениво — при первом переключении в этот режим.
@@ -1086,6 +1128,69 @@ impl Document {
         });
     }
 
+    /// Устанавливает callback окна для обновления кнопки сохранения.
+    pub fn set_modified_handler(&self, handler: ModifiedHandler) {
+        *self.modified_handler.borrow_mut() = Some(handler);
+    }
+
+    /// Меняет флаг «есть несохранённые правки» и обновляет интерфейс.
+    fn set_modified_state(&self, modified: bool) {
+        if self.is_modified.replace(modified) == modified {
+            return;
+        }
+
+        self.update_tab_title();
+        if let Some(handler) = self.modified_handler.borrow().clone() {
+            handler();
+        }
+    }
+
+    /// Планирует отложенное сравнение буфера с версией на диске.
+    ///
+    /// Полный хеш большого файла не нужно считать на каждое нажатие:
+    /// сравнение выполняется после паузы в наборе.
+    fn schedule_dirty_check(self: &Rc<Self>) {
+        self.cancel_dirty_check();
+
+        let weak_doc = Rc::downgrade(self);
+        let source_id = glib::timeout_add_local(Duration::from_millis(400), move || {
+            if let Some(doc) = weak_doc.upgrade() {
+                doc.dirty_check_timeout.set(None);
+                doc.recompute_modified();
+            }
+            glib::ControlFlow::Break
+        });
+        self.dirty_check_timeout.set(Some(source_id));
+    }
+
+    /// Пересчитывает флаг сразу после undo/redo.
+    fn schedule_dirty_check_now(self: &Rc<Self>) {
+        self.cancel_dirty_check();
+
+        let weak_doc = Rc::downgrade(self);
+        glib::idle_add_local_once(move || {
+            if let Some(doc) = weak_doc.upgrade() {
+                doc.recompute_modified();
+            }
+        });
+    }
+
+    fn cancel_dirty_check(&self) {
+        if let Some(source_id) = self.dirty_check_timeout.take() {
+            source_id.remove();
+        }
+    }
+
+    /// Сравнивает текущий буфер с последней известной версией на диске.
+    fn recompute_modified(&self) {
+        let text = self
+            .buffer
+            .text(&self.buffer.start_iter(), &self.buffer.end_iter(), false);
+        let current_hash = hash_text(&text);
+        let modified = self.saved_content_hash.get() != Some(current_hash);
+        self.set_modified_state(modified);
+    }
+
     /// Обновляет заголовок вкладки с учетом имени файла и несохраненных правок.
     pub fn update_tab_title(&self) {
         let lang = Language::from_code(&self.settings.borrow().language);
@@ -1151,10 +1256,11 @@ impl Document {
             .map_err(|error| format!("{}: {error}", path.display()))?;
 
         *self.current_file.borrow_mut() = Some(path.to_path_buf());
-        self.is_modified.set(false);
         // Запоминаем хеш собственной записи: монитор увидит событие от
         // нашего сохранения и не должен показывать его как внешнее.
+        self.saved_content_hash.set(Some(hash_text(&text)));
         *self.last_external_file_hash.borrow_mut() = Some(hash_text(&text));
+        self.set_modified_state(false);
         self.update_tab_title();
         self.restart_file_monitor();
         Ok(())
@@ -1217,14 +1323,6 @@ impl Document {
                 return;
             };
 
-            let current = doc
-                .buffer
-                .text(&doc.buffer.start_iter(), &doc.buffer.end_iter(), false);
-            if content == current {
-                // Это событие от нашего же сохранения — ничего не делаем.
-                return;
-            }
-
             // Хешируем именно внешнюю версию. Серия событий от одного
             // сохранения даст один и тот же хеш и не создаст несколько toast.
             let content_hash = hash_text(&content);
@@ -1233,18 +1331,39 @@ impl Document {
             }
             *doc.last_external_file_hash.borrow_mut() = Some(content_hash);
 
-            if doc.is_modified.get() {
-                handler(FileChange::Conflict);
+            let current = doc
+                .buffer
+                .text(&doc.buffer.start_iter(), &doc.buffer.end_iter(), false);
+            if content == current {
+                // Внешняя версия уже совпадает с буфером: сохранять
+                // нечего, даже если раньше документ считался изменённым.
+                doc.saved_content_hash.set(Some(content_hash));
+                doc.set_modified_state(false);
+                handler(FileChange::Reloaded);
                 return;
             }
 
-            match doc.reload_from_disk() {
-                Ok(()) => {
-                    handler(FileChange::Reloaded);
+            // Если локальных правок не было, просто перечитываем файл:
+            // reload_from_disk сам обновит базу сравнения.
+            if !doc.is_modified.get() {
+                match doc.reload_from_disk() {
+                    Ok(()) => handler(FileChange::Reloaded),
+                    Err(_) => handler(FileChange::Conflict),
                 }
-                Err(_) => {
-                    handler(FileChange::Conflict);
-                }
+                return;
+            }
+
+            // Локальные правки есть. Внешняя версия становится актуальной
+            // базой сравнения: даже если пользователь откатит все правки,
+            // они останутся отличием от того, что сейчас лежит на диске.
+            doc.saved_content_hash.set(Some(content_hash));
+            doc.recompute_modified();
+
+            if doc.is_modified.get() {
+                handler(FileChange::Conflict);
+            } else {
+                // Буфер совпал с внешней версией — конфликта больше нет.
+                handler(FileChange::Reloaded);
             }
         });
 
@@ -1267,8 +1386,9 @@ impl Document {
             .buffer
             .text(&self.buffer.start_iter(), &self.buffer.end_iter(), false);
         if current == content {
-            self.is_modified.set(false);
+            self.saved_content_hash.set(Some(hash_text(&content)));
             *self.last_external_file_hash.borrow_mut() = Some(hash_text(&content));
+            self.set_modified_state(false);
             self.update_tab_title();
             return Ok(());
         }
@@ -1296,8 +1416,9 @@ impl Document {
         iter.set_line_offset(valid_column);
         self.buffer.place_cursor(&iter);
 
-        self.is_modified.set(false);
+        self.saved_content_hash.set(Some(hash_text(&content)));
         *self.last_external_file_hash.borrow_mut() = Some(hash_text(&content));
+        self.set_modified_state(false);
         self.update_tab_title();
         if self.is_preview_active.get() {
             self.refresh_preview();
@@ -1329,7 +1450,8 @@ impl Document {
         iter.set_line_offset(valid_column);
         self.buffer.place_cursor(&iter);
 
-        self.is_modified.set(true);
+        self.saved_content_hash.set(None);
+        self.set_modified_state(true);
         *self.last_external_file_hash.borrow_mut() = None;
         self.update_tab_title();
         schedule_cursor_scroll(

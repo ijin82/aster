@@ -244,6 +244,7 @@ impl Document {
     fn end_bulk_edit(self: &Rc<Self>) {
         self.bulk_editing.set(false);
         highlighter::highlight_markdown_buffer(&self.buffer);
+        self.schedule_dirty_check();
         self.schedule_diagnostics();
         self.gutter.queue_draw();
         self.update_tab_title();

@@ -42,6 +42,7 @@ The main goal of the project is to serve as a clear, practical guide to building
   - **Session restore**: when launched normally without arguments, the application opens all tabs that were open in the previous session, including cursor positions, scroll positions, and the active tab (similar to GNOME Text Editor). Unsaved untitled tabs are not persisted because their contents are not associated with a file on disk.
   - **Opening one or more files** (`Ctrl+O`, the `aster file.md` argument, a file manager, or D-Bus). The open dialog starts in the directory of the active document or the last opened file. Reopening an already open file switches to the existing tab instead of creating a duplicate.
   - Saving (`Ctrl+S`) and "Save As..." (`Ctrl+Shift+S`).
+  - **Accurate unsaved changes indication**: the tab dot and the Save button accent disappear when the content matches the version on disk again, including after undoing all changes with `Ctrl+Z`. The check is debounced so large files are not hashed on every keystroke.
   - **Unsaved changes indication** following GNOME HIG:
     - A subtle `●` dot before the file name in the window title (`● document.md — Aster`).
     - The "Save" button is highlighted with the accent `.suggested-action` style (blue button) while there are unsaved changes.
@@ -50,7 +51,7 @@ The main goal of the project is to serve as a clear, practical guide to building
   - Close a tab with `Ctrl+W`; close the window and exit the application with `Ctrl+Q` or `Ctrl+F4`.
   - **Window state and size memory**: saves the maximized state and exact dimensions (width/height).
 - **Reliability**:
-  - **Reaction to external file changes**: a `gio::FileMonitor` watches every open file. If the file changes externally and the document has no unsaved edits, Aster reloads it silently: a series of saves from another editor must not produce a stream of toasts. If there are unsaved edits, a single "File changed on disk" toast appears with a "Reload" button; repeated events do not add new toasts while the current one is visible, so editor contents are never silently lost.
+  - **Reaction to external file changes**: a `gio::FileMonitor` watches every open file. If the file changes externally and the document has no unsaved edits, Aster reloads it silently: a series of saves from another editor must not produce a stream of toasts. If there are unsaved edits, a single "File changed on disk" toast appears with a "Reload" button; repeated events do not add new toasts while the current one is visible, so editor contents are never silently lost. When local edits exist, the new disk version becomes the comparison baseline, so undoing local changes does not hide the conflict.
   - **Recovery of untitled tabs after a crash**: the contents of unsaved untitled tabs are saved to `~/.local/share/aster/recovery.json` with a one-second debounce after the last edit. After an abnormal exit, drafts are restored on the next launch as modified untitled tabs. On a normal application exit, the recovery file is deleted.
 - **Search and replace (`Ctrl+F`, `Ctrl+R`)**:
   - Search bar with highlighting of all occurrences; the current match is highlighted with higher contrast.

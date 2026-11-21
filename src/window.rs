@@ -309,6 +309,17 @@ pub fn build_window(
             *doc.tab_page.borrow_mut() = Some(page.clone());
             doc.update_tab_title();
 
+            // При отложенном пересчёте dirty-состояния (например, после
+            // Ctrl+Z) обновляем кнопку сохранения и заголовок окна.
+            {
+                let refresh_for_modified = Rc::downgrade(&refresh_active_ui);
+                doc.set_modified_handler(Rc::new(move || {
+                    if let Some(refresh) = refresh_for_modified.upgrade() {
+                        refresh();
+                    }
+                }));
+            }
+
             // Следим за изменениями файла на диске. Слабые ссылки на
             // callbacks окна нужны, чтобы Document не удерживал docs и
             // refresh_active_ui, иначе получился бы цикл владения.

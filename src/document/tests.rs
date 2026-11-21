@@ -949,3 +949,39 @@ fn test_lint_github_alerts() {
         .iter()
         .any(|d| d.rule == Rule::GhAlert));
 }
+
+#[gtk4::test]
+fn test_modified_flag_clears_after_undo() {
+    let settings = Rc::new(RefCell::new(AppSettings::default()));
+    let doc = Document::new(settings, None, false).expect("create document");
+    assert!(!doc.is_modified.get());
+
+    let mut end = doc.buffer.end_iter();
+    doc.buffer.insert(&mut end, "temporary text");
+    doc.recompute_modified();
+    assert!(doc.is_modified.get(), "typing must mark the document dirty");
+
+    doc.buffer.undo();
+    doc.recompute_modified();
+    assert!(
+        !doc.is_modified.get(),
+        "undo back to the saved content must clear the dirty flag"
+    );
+}
+
+#[gtk4::test]
+fn test_modified_flag_is_relative_to_disk_after_external_change() {
+    let settings = Rc::new(RefCell::new(AppSettings::default()));
+    let doc = Document::new(settings, None, false).expect("create document");
+
+    // Имитируем: на диске уже другая версия, а в буфере — локальная.
+    doc.buffer.set_text("local");
+    doc.saved_content_hash.set(Some(hash_text("external")));
+    doc.recompute_modified();
+    assert!(doc.is_modified.get());
+
+    // Буфер совпал с внешней версией — конфликта и правок нет.
+    doc.buffer.set_text("external");
+    doc.recompute_modified();
+    assert!(!doc.is_modified.get());
+}
