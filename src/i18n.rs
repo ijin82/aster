@@ -704,6 +704,14 @@ impl Language {
                 Language::Russian => "Непостоянный стиль колонок таблицы",
                 Language::English => "Table column style",
             },
+            "GHALERT" => match self {
+                Language::Russian => {
+                    "Некорректный GitHub Alert. Доступны NOTE, TIP, IMPORTANT, WARNING, CAUTION"
+                }
+                Language::English => {
+                    "Invalid GitHub alert. Use NOTE, TIP, IMPORTANT, WARNING, or CAUTION"
+                }
+            },
             _ => match self {
                 Language::Russian => "Нарушение стиля Markdown",
                 Language::English => "Markdown style violation",

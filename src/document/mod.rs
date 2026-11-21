@@ -375,6 +375,12 @@ pub struct Document {
     diagnostics: Rc<RefCell<Vec<Diagnostic>>>,
     /// Таймер отложенной проверки стиля после последней правки.
     diagnostics_timeout: Cell<Option<glib::SourceId>>,
+    /// Слой редактора, поверх которого показывается собственный tooltip.
+    lint_tooltip_overlay: gtk4::Overlay,
+    /// Карточка собственного tooltip линтера.
+    lint_tooltip: gtk4::Box,
+    /// Текст собственного tooltip линтера.
+    lint_tooltip_label: gtk4::Label,
     /// Текстовый буфер редактора.
     pub buffer: gtk4::TextBuffer,
     /// Виджет редактора.
@@ -483,6 +489,29 @@ impl Document {
         let editor_overlay = gtk4::Overlay::new();
         editor_overlay.set_child(Some(&editor_scroll));
         editor_overlay.add_overlay(&whitespace_area);
+
+        // Собственный tooltip вместо GtkTooltip. Штатный механизм GTK
+        // перестаёт показывать подсказку после нескольких срабатываний
+        // на одном и том же виджете, поэтому рисуем карточку сами.
+        // Находится поверх текста, не перехватывает мышь и не является
+        // ни popover, ни диалогом.
+        let lint_tooltip_label = gtk4::Label::new(None);
+        lint_tooltip_label.set_xalign(0.0);
+        lint_tooltip_label.set_wrap(true);
+        lint_tooltip_label.set_max_width_chars(56);
+        lint_tooltip_label.set_margin_top(8);
+        lint_tooltip_label.set_margin_bottom(8);
+        lint_tooltip_label.set_margin_start(10);
+        lint_tooltip_label.set_margin_end(10);
+
+        let lint_tooltip = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        lint_tooltip.add_css_class("lint-tooltip");
+        lint_tooltip.set_can_target(false);
+        lint_tooltip.set_halign(gtk4::Align::Start);
+        lint_tooltip.set_valign(gtk4::Align::Start);
+        lint_tooltip.set_visible(false);
+        lint_tooltip.append(&lint_tooltip_label);
+        editor_overlay.add_overlay(&lint_tooltip);
 
         // Перерисовываем номера строк и слой пробелов при любой прокрутке.
         let gutter_for_scroll = gutter.clone();
@@ -670,6 +699,9 @@ impl Document {
             bulk_editing: Cell::new(false),
             diagnostics,
             diagnostics_timeout: Cell::new(None),
+            lint_tooltip_overlay: editor_overlay.clone(),
+            lint_tooltip,
+            lint_tooltip_label,
             buffer,
             text_view,
             editor_scroll,
@@ -735,6 +767,9 @@ impl Document {
 
                 doc.gutter.queue_draw();
                 doc.whitespace_area.queue_draw();
+                // При правке старая подсказка может относиться к уже
+                // исчезнувшей диагностике.
+                doc.hide_lint_tooltip();
                 highlighter::highlight_markdown_buffer(buf);
 
                 // Проверку стиля не запускаем на каждое нажатие: она
@@ -838,7 +873,6 @@ impl Document {
         self.setup_link_policy();
 
         // 8. Подсказки и Ctrl+клик по нарушениям стиля.
-        self.setup_diagnostic_tooltip();
         self.setup_lint_links();
     }
 

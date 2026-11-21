@@ -34,9 +34,7 @@ pub(crate) fn apply_color_scheme(theme: &str) {
         "dark" | "dracula" | "kimbie_dark" | "solarized_dark" => {
             style_mgr.set_color_scheme(adw::ColorScheme::ForceDark)
         }
-        "light" | "solarized_light" => {
-            style_mgr.set_color_scheme(adw::ColorScheme::ForceLight)
-        }
+        "light" | "solarized_light" => style_mgr.set_color_scheme(adw::ColorScheme::ForceLight),
         _ => style_mgr.set_color_scheme(adw::ColorScheme::Default),
     }
 }
@@ -53,18 +51,21 @@ pub(crate) fn apply_editor_style_css(
     font_family: &str,
     font_size: u32,
 ) {
-    let (bg, fg, cursor_color) = match theme {
-        "dracula" => ("#282a36", "#f8f8f2", "#bd93f9"),
-        "kimbie_dark" => ("#221a0f", "#d3af86", "#f79a32"),
-        "solarized_dark" => ("#002b36", "#839496", "#268bd2"),
-        "solarized_light" => ("#fdf6e3", "#657b83", "#268bd2"),
-        "light" => ("#ffffff", "#1f2328", "#0969da"),
-        "dark" => ("#0d1117", "#e6edf3", "#4493f8"),
+    // Последние два цвета — фон и рамка собственного tooltip линтера.
+    // Фон всегда непрозрачный: полупрозрачная карточка мешает читать
+    // подчёркнутый текст под ней.
+    let (bg, fg, cursor_color, tooltip_bg, tooltip_border) = match theme {
+        "dracula" => ("#282a36", "#f8f8f2", "#bd93f9", "#44475a", "#6272a4"),
+        "kimbie_dark" => ("#221a0f", "#d3af86", "#f79a32", "#3a2c1a", "#7e602c"),
+        "solarized_dark" => ("#002b36", "#839496", "#268bd2", "#073642", "#586e75"),
+        "solarized_light" => ("#fdf6e3", "#657b83", "#268bd2", "#eee8d5", "#93a1a1"),
+        "light" => ("#ffffff", "#1f2328", "#0969da", "#f6f8fa", "#d0d7de"),
+        "dark" => ("#0d1117", "#e6edf3", "#4493f8", "#161b22", "#30363d"),
         _ => {
             if is_dark {
-                ("#0d1117", "#e6edf3", "#4493f8")
+                ("#0d1117", "#e6edf3", "#4493f8", "#161b22", "#30363d")
             } else {
-                ("#ffffff", "#1f2328", "#0969da")
+                ("#ffffff", "#1f2328", "#0969da", "#f6f8fa", "#d0d7de")
             }
         }
     };
@@ -85,6 +86,12 @@ pub(crate) fn apply_editor_style_css(
             border: 1px solid rgba(127, 127, 127, 0.28);
             border-radius: 6px;
             padding: 1px 8px;
+        }}
+        .lint-tooltip {{
+            background-color: {tooltip_bg};
+            color: {fg};
+            border: 1px solid {tooltip_border};
+            border-radius: 8px;
         }}"
     );
     provider.load_from_data(&css);

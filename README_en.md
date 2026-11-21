@@ -33,6 +33,7 @@ The main goal of the project is to serve as a clear, practical guide to building
   - **Per-mode scroll memory**: the editor and preview keep separate scroll positions, so switching does not "jump" to a random place in the document.
   - Rendering through WebKitGTK with the original `github-markdown-css` stylesheet.
   - Support for GFM (GitHub Flavored Markdown) extensions: tables, task lists with checkboxes (`- [x]`), footnotes, strikethrough, blockquotes, and code blocks.
+  - **GitHub Alerts**: rendering of `> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, and `[!CAUTION]` with GitHub icons, colors, and typography. Invalid types are highlighted by the `GHALERT` diagnostic.
   - Automatic color adaptation for GitHub light and dark themes.
   - Loading local images (SVG, PNG, JPG, WebP) via relative paths based on the open file, using `base_uri`.
   - **Safe preview**: Content Security Policy blocks scripts and network requests from Markdown; external links open in the system browser; internal anchors (including heading anchors) scroll within the page; and the WebView itself cannot navigate away from the current document. Access to arbitrary `file://` URLs is disabled.
@@ -71,10 +72,46 @@ The main goal of the project is to serve as a clear, practical guide to building
   - Editor font size (applied on the fly to existing and newly entered text via the CSS rule `textview.editor-view text`).
   - Preview font size.
   - **Line number visibility toggle** in edit mode (`adw::SwitchRow`) and with the `Ctrl+Shift+L` shortcut. Numbers are aligned to the first visual row, so on a long soft-wrapped line the number stays at its beginning instead of the middle. The switch is located in the editor settings group.
-  - **Markdown style checking** (enabled by default) — wavy underlines and tooltips for rules MD007, MD009, MD010, MD012, MD018, MD019, MD020, MD021, MD022, MD023, MD024, MD025, MD026, MD029, MD030, MD031, MD032, MD040, MD042, MD045, MD047, MD055, MD056, and MD060. Disabling it instantly removes the underlines from all open tabs.
+  - **Markdown style checking** (enabled by default) — wavy underlines and tooltips for rules MD007, MD009, MD010, MD012, MD018, MD019, MD020, MD021, MD022, MD023, MD024, MD025, MD026, MD029, MD030, MD031, MD032, MD040, MD042, MD045, MD047, MD055, MD056, and MD060, plus a separate `GHALERT` diagnostic for invalid GitHub Alerts. Disabling it instantly removes the underlines from all open tabs.
   - **Shortcuts next to the switches**: combinations are shown as a single compact badge (`Ctrl + Shift + W`) instead of a row of separate keycaps.
   - **Preferences window size memory**: the window opens 15% wider than before, remains freely resizable, and remembers the width and height chosen by the user.
   - Settings are stored as JSON following the XDG standard (`~/.config/aster/settings.json`).
+
+---
+
+## 💬 GitHub Alerts
+
+Aster supports all five GitHub alert types. The syntax matches GitHub: a blockquote with the type on its own line, and every content line prefixed with `>`.
+
+| Type | When to use |
+|---|---|
+| `[!NOTE]` | neutral, useful information |
+| `[!TIP]` | advice on doing something better |
+| `[!IMPORTANT]` | key information |
+| `[!WARNING]` | requires immediate attention |
+| `[!CAUTION]` | risk or negative consequences |
+
+```markdown
+> [!NOTE]
+> Useful information.
+
+> [!WARNING]
+> Something may go wrong.
+
+> [!TIP]
+> **Title**
+> Formatting, `code`, and lists are supported:
+>
+> - first item
+> - second item
+```
+
+Rules:
+
+- the type goes on its own line and must not contain extra characters;
+- GitHub does not support custom titles — make the first content line bold;
+- `[!alert!]`, `[!alert]`, and other unknown types are not rendered as callouts;
+- Aster highlights such mistakes with the `GHALERT` diagnostic; the tooltip lists valid types, and `Ctrl+click` opens the GitHub documentation.
 
 ---
 
@@ -215,8 +252,8 @@ To install icons in PNG formats, the script uses `rsvg-convert` or Python bindin
 ### 4. Building the release archive
 
 ```bash
-# Prepare a v0.9.0 release with one command
-./package-release.sh v0.9.0
+# Prepare a v0.10.0 release with one command
+./package-release.sh v0.10.0
 
 # Without an argument, the current version from VERSION is used
 ./package-release.sh

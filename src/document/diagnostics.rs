@@ -117,6 +117,8 @@ pub(super) enum Rule {
     Md056,
     /// MD060 — непостоянный стиль колонок таблицы.
     Md060,
+    /// GHALERT — неизвестный или некорректный тип GitHub Alert.
+    GhAlert,
 }
 
 impl Rule {
@@ -147,6 +149,7 @@ impl Rule {
             Rule::Md055 => "MD055",
             Rule::Md056 => "MD056",
             Rule::Md060 => "MD060",
+            Rule::GhAlert => "GHALERT",
         }
     }
 
@@ -191,6 +194,7 @@ impl Rule {
             Rule::Md055 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md055.md",
             Rule::Md056 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md056.md",
             Rule::Md060 => "https://github.com/DavidAnson/markdownlint/blob/main/doc/md060.md",
+            Rule::GhAlert => "https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax#alerts",
         }
     }
 
@@ -319,49 +323,6 @@ pub(super) fn apply_to_buffer(buffer: &gtk4::TextBuffer, diagnostics: &[Diagnost
 }
 
 impl Document {
-    /// Подключает подсказки при наведении на подчёркнутый фрагмент.
-    ///
-    /// Используется штатный механизм `query-tooltip` GTK: он сам решает,
-    /// когда показать подсказку, и не мешает встроенным тултипам виджетов.
-    /// Координаты события переводятся из окна виджета в координаты буфера.
-    pub(super) fn setup_diagnostic_tooltip(self: &Rc<Self>) {
-        self.text_view.set_has_tooltip(true);
-
-        let weak_doc = Rc::downgrade(self);
-        self.text_view
-            .connect_query_tooltip(move |view, x, y, _keyboard_mode, tooltip| {
-                let Some(doc) = weak_doc.upgrade() else {
-                    return false;
-                };
-
-                let (buffer_x, buffer_y) =
-                    view.window_to_buffer_coords(gtk4::TextWindowType::Widget, x, y);
-                let Some(iter) = view.iter_at_location(buffer_x, buffer_y) else {
-                    return false;
-                };
-
-                let message = {
-                    let diagnostics = doc.diagnostics.borrow();
-                    diagnostic_at(&diagnostics, iter.line(), iter.line_offset()).map(|diagnostic| {
-                        let lang = Language::from_code(&doc.settings.borrow().language);
-                        format!(
-                            "{} — {}\n{}",
-                            diagnostic.rule.id(),
-                            lang.lint_message(diagnostic.rule.id()),
-                            lang.lint_tooltip_hint()
-                        )
-                    })
-                };
-
-                let Some(message) = message else {
-                    return false;
-                };
-
-                tooltip.set_text(Some(message.as_str()));
-                true
-            });
-    }
-
     /// Делает подчёркнутые фрагменты «ссылками»: Ctrl+клик открывает
     /// документацию правила, а при наведении с зажатым Ctrl курсор
     /// меняется на «палец», как у ссылки в браузере.
@@ -389,6 +350,21 @@ impl Document {
 
                 hover.rule.set(rule);
                 update_lint_cursor(&doc.text_view, &hover, ctrl_is_down(&doc.text_view));
+                // Собственный tooltip-лейбл: не зависит от кэширования
+                // GtkTooltip и показывается при каждом наведении.
+                doc.update_lint_tooltip(rule, x, y);
+            });
+        }
+
+        {
+            let weak_doc = Rc::downgrade(self);
+            let hover = hover.clone();
+            motion.connect_leave(move |_| {
+                if let Some(doc) = weak_doc.upgrade() {
+                    hover.rule.set(None);
+                    update_lint_cursor(&doc.text_view, &hover, false);
+                    doc.hide_lint_tooltip();
+                }
             });
         }
         self.text_view.add_controller(motion);
@@ -464,6 +440,7 @@ impl Document {
                 if let Some(doc) = weak_doc.upgrade() {
                     hover.rule.set(None);
                     update_lint_cursor(&doc.text_view, &hover, false);
+                    doc.hide_lint_tooltip();
                 }
             });
         }
@@ -508,6 +485,7 @@ impl Document {
     /// [`Document::schedule_diagnostics`].
     pub(super) fn refresh_diagnostics(&self) {
         self.cancel_diagnostics();
+        self.hide_lint_tooltip();
 
         if !self.settings.borrow().markdown_lint {
             self.clear_diagnostics();
@@ -531,6 +509,7 @@ impl Document {
 
     /// Убирает все подчёркивания и очищает список диагностик.
     pub(super) fn clear_diagnostics(&self) {
+        self.hide_lint_tooltip();
         self.diagnostics.borrow_mut().clear();
 
         let start = self.buffer.start_iter();
@@ -548,6 +527,68 @@ impl Document {
     /// выключении проверки теги снимаются, но текст остаётся неизменным.
     pub fn apply_markdown_lint_setting(&self) {
         self.refresh_diagnostics();
+    }
+
+    /// Показывает собственный tooltip рядом с указателем.
+    ///
+    /// Используется не `GtkTooltip`, а обычная карточка поверх редактора:
+    /// так подсказка гарантированно появляется при каждом наведении и не
+    /// зависит от внутреннего кэширования GTK. Карточка не перехватывает
+    /// события мыши.
+    pub(super) fn update_lint_tooltip(&self, rule: Option<Rule>, x: f64, y: f64) {
+        let Some(rule) = rule else {
+            self.hide_lint_tooltip();
+            return;
+        };
+
+        let lang = Language::from_code(&self.settings.borrow().language);
+        self.lint_tooltip_label.set_text(&format!(
+            "{} — {}\n{}",
+            rule.id(),
+            lang.lint_message(rule.id()),
+            lang.lint_tooltip_hint()
+        ));
+
+        let Some((x, y)) = self
+            .text_view
+            .translate_coordinates(&self.lint_tooltip_overlay, x, y)
+        else {
+            self.hide_lint_tooltip();
+            return;
+        };
+
+        let overlay_width = self.lint_tooltip_overlay.width().max(1);
+        let overlay_height = self.lint_tooltip_overlay.height().max(1);
+        let (_, natural_width, _, _) = self.lint_tooltip.measure(gtk4::Orientation::Horizontal, -1);
+        let (_, natural_height, _, _) = self
+            .lint_tooltip
+            .measure(gtk4::Orientation::Vertical, natural_width.max(1));
+        let natural_width = natural_width.max(1);
+        let natural_height = natural_height.max(1);
+
+        let mut tooltip_x = x + 14.0;
+        let mut tooltip_y = y + 20.0;
+
+        // Не даём подсказке выйти за пределы редактора: у правого края
+        // показываем её слева от курсора, у нижнего — сверху.
+        if tooltip_x + natural_width as f64 > overlay_width as f64 {
+            tooltip_x = (x - natural_width as f64 - 14.0).max(0.0);
+        }
+        if tooltip_y + natural_height as f64 > overlay_height as f64 {
+            tooltip_y = (y - natural_height as f64 - 8.0).max(0.0);
+        }
+
+        self.lint_tooltip
+            .set_margin_start(tooltip_x.max(0.0) as i32);
+        self.lint_tooltip.set_margin_top(tooltip_y.max(0.0) as i32);
+        self.lint_tooltip.set_visible(true);
+    }
+
+    /// Скрывает собственный tooltip линтера.
+    pub(super) fn hide_lint_tooltip(&self) {
+        if self.lint_tooltip.is_visible() {
+            self.lint_tooltip.set_visible(false);
+        }
     }
 }
 
@@ -995,6 +1036,9 @@ pub(super) fn validate(text: &str) -> Vec<Diagnostic> {
 
     // --- MD055, MD056 и MD060: таблицы ---
     check_table_rules(&lines, &is_code, &mut result);
+
+    // --- GHALERT: корректность GitHub Alerts ---
+    check_github_alerts(&lines, &is_code, &mut result);
 
     // --- MD007, MD029 и MD030: списки ---
     check_list_rules(&lines, &is_code, &mut result);
@@ -1845,4 +1889,66 @@ fn table_matches_compact(rows: &[&TableRow]) -> bool {
 fn table_matches_tight(rows: &[&TableRow]) -> bool {
     rows.iter()
         .all(|row| row.cells.iter().all(|cell| cell.trim() == cell.as_str()))
+}
+
+/// Проверяет типы GitHub Alerts.
+///
+/// Это не правило markdownlint, а собственная диагностика Aster: она
+/// помогает заметить `[!alert!]`, неизвестные типы и текст после типа,
+/// которые GitHub не превратит в callout. Валидные типы рендерер
+/// поддерживает независимо от регистра.
+fn check_github_alerts(lines: &[&str], is_code: &[bool], result: &mut Vec<Diagnostic>) {
+    for (index, line) in lines.iter().enumerate() {
+        if is_code[index] {
+            continue;
+        }
+        if let Some((start_col, end_col)) = invalid_alert_marker(line) {
+            result.push(Diagnostic::new(Rule::GhAlert, index, start_col, end_col));
+        }
+    }
+}
+
+/// Возвращает границы `[!TYPE]`, если alert-маркер некорректен.
+fn invalid_alert_marker(line: &str) -> Option<(i32, i32)> {
+    let indent = line.chars().take_while(|ch| *ch == ' ').count();
+    if indent > 3 {
+        return None;
+    }
+
+    let mut rest = &line[indent..];
+    let mut offset = indent;
+    let mut in_blockquote = false;
+
+    // Пропускаем маркеры вложенных цитат: `> > [!NOTE]`.
+    while let Some(after_marker) = rest.strip_prefix('>') {
+        in_blockquote = true;
+        offset += 1;
+        rest = after_marker;
+        if let Some(after_space) = rest.strip_prefix(' ') {
+            offset += 1;
+            rest = after_space;
+        }
+    }
+
+    if !in_blockquote || !rest.starts_with("[!") {
+        return None;
+    }
+
+    let close = rest.find(']')?;
+    let marker = &rest[..=close];
+    let kind = &rest[2..close];
+    let trailing = rest[close + 1..].trim();
+
+    let valid_kind = matches!(
+        kind.to_ascii_lowercase().as_str(),
+        "note" | "tip" | "important" | "warning" | "caution"
+    );
+
+    if valid_kind && trailing.is_empty() {
+        return None;
+    }
+
+    let start_col = offset as i32;
+    let end_col = start_col + marker.chars().count() as i32;
+    Some((start_col, end_col))
 }

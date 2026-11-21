@@ -914,3 +914,38 @@ fn test_lint_table_rules() {
         .iter()
         .any(|d| matches!(d.rule, Rule::Md055 | Rule::Md056 | Rule::Md060)));
 }
+
+#[test]
+fn test_lint_github_alerts() {
+    for kind in ["NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION", "note"] {
+        let text = format!("> [!{kind}]\n> Text\n");
+        assert!(
+            !validate(&text).iter().any(|d| d.rule == Rule::GhAlert),
+            "valid alert {kind} was reported"
+        );
+    }
+
+    // Неизвестный тип и лишний `!` не станут GitHub Alert.
+    let diagnostics = validate("> [!alert!]\n> Text\n");
+    let alert = diagnostics
+        .iter()
+        .find(|d| d.rule == Rule::GhAlert)
+        .expect("GHALERT expected");
+    assert_eq!(alert.start_col, 2);
+    assert_eq!(alert.end_col, 11);
+
+    // Текст после типа на той же строке тоже ломает callout.
+    assert!(validate("> [!NOTE] Title\n> Text\n")
+        .iter()
+        .any(|d| d.rule == Rule::GhAlert));
+
+    // В блоке кода alert-разметка не проверяется.
+    assert!(!validate("```md\n> [!alert!]\n```\n")
+        .iter()
+        .any(|d| d.rule == Rule::GhAlert));
+
+    // Вне цитаты это просто текст.
+    assert!(!validate("[!alert!]\n")
+        .iter()
+        .any(|d| d.rule == Rule::GhAlert));
+}
