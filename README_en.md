@@ -254,8 +254,8 @@ To install icons in PNG formats, the script uses `rsvg-convert` or Python bindin
 ### 4. Building the release archive
 
 ```bash
-# Prepare a v0.11.0 release with one command
-./package-release.sh v0.11.0
+# Prepare a v0.11.1 release with one command
+./package-release.sh v0.11.1
 
 # Without an argument, the current version from VERSION is used
 ./package-release.sh
