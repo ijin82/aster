@@ -559,12 +559,23 @@ impl Document {
 
         let overlay_width = self.lint_tooltip_overlay.width().max(1);
         let overlay_height = self.lint_tooltip_overlay.height().max(1);
-        let (_, natural_width, _, _) = self.lint_tooltip.measure(gtk4::Orientation::Horizontal, -1);
-        let (_, natural_height, _, _) = self
-            .lint_tooltip
-            .measure(gtk4::Orientation::Vertical, natural_width.max(1));
-        let natural_width = natural_width.max(1);
-        let natural_height = natural_height.max(1);
+
+        // Меряем именно текст, а не карточку: у GtkFixed дочерний виджет
+        // может получить ширину контейнера, из-за чего справа оставалось
+        // пустое место. Явный size request фиксирует размер по содержимому.
+        let (_, text_width, _, _) = self
+            .lint_tooltip_label
+            .measure(gtk4::Orientation::Horizontal, -1);
+        let (_, text_height, _, _) = self
+            .lint_tooltip_label
+            .measure(gtk4::Orientation::Vertical, text_width.max(1));
+
+        // 10 px слева + 10 px справа, 8 px сверху + 8 px снизу,
+        // плюс по 1 px на рамку.
+        let natural_width = text_width.max(1) + 22;
+        let natural_height = text_height.max(1) + 18;
+        self.lint_tooltip
+            .set_size_request(natural_width, natural_height);
 
         let mut tooltip_x = x + 14.0;
         let mut tooltip_y = y + 20.0;
@@ -578,16 +589,22 @@ impl Document {
             tooltip_y = (y - natural_height as f64 - 8.0).max(0.0);
         }
 
-        self.lint_tooltip
-            .set_margin_start(tooltip_x.max(0.0) as i32);
-        self.lint_tooltip.set_margin_top(tooltip_y.max(0.0) as i32);
+        self.lint_tooltip_layer.move_(
+            &self.lint_tooltip,
+            tooltip_x.max(0.0),
+            tooltip_y.max(0.0),
+        );
         self.lint_tooltip.set_visible(true);
+        self.lint_tooltip_layer.queue_draw();
     }
 
     /// Скрывает собственный tooltip линтера.
     pub(super) fn hide_lint_tooltip(&self) {
         if self.lint_tooltip.is_visible() {
             self.lint_tooltip.set_visible(false);
+            // Явно инвалидируем слой: иначе фон старой карточки может
+            // остаться нарисованным до следующего полного перерисовывания.
+            self.lint_tooltip_layer.queue_draw();
         }
     }
 }

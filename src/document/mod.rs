@@ -390,6 +390,8 @@ pub struct Document {
     modified_handler: RefCell<Option<ModifiedHandler>>,
     /// Слой редактора, поверх которого показывается собственный tooltip.
     lint_tooltip_overlay: gtk4::Overlay,
+    /// Полноразмерный `Fixed`-слой для свободного позиционирования tooltip.
+    lint_tooltip_layer: gtk4::Fixed,
     /// Карточка собственного tooltip линтера.
     lint_tooltip: gtk4::Box,
     /// Текст собственного tooltip линтера.
@@ -510,8 +512,10 @@ impl Document {
         // ни popover, ни диалогом.
         let lint_tooltip_label = gtk4::Label::new(None);
         lint_tooltip_label.set_xalign(0.0);
-        lint_tooltip_label.set_wrap(true);
-        lint_tooltip_label.set_max_width_chars(56);
+        // Подсказка короткая: одна строка с правилом и одна с подсказкой
+        // про Ctrl+клик. Перенос делал карточку узкой и превращал её
+        // в многострочный столбик, поэтому перенос отключён.
+        lint_tooltip_label.set_wrap(false);
         lint_tooltip_label.set_margin_top(8);
         lint_tooltip_label.set_margin_bottom(8);
         lint_tooltip_label.set_margin_start(10);
@@ -524,7 +528,17 @@ impl Document {
         lint_tooltip.set_valign(gtk4::Align::Start);
         lint_tooltip.set_visible(false);
         lint_tooltip.append(&lint_tooltip_label);
-        editor_overlay.add_overlay(&lint_tooltip);
+
+        // `GtkOverlay` хорошо размещает детей по краям, но при смене
+        // margins старый прямоугольник иногда остаётся на экране.
+        // `GtkFixed` двигает ребёнка явно и инвалидирует обе области,
+        // поэтому подсказка не оставляет «призрака» на прошлой строке.
+        let lint_tooltip_layer = gtk4::Fixed::new();
+        lint_tooltip_layer.set_hexpand(true);
+        lint_tooltip_layer.set_vexpand(true);
+        lint_tooltip_layer.set_can_target(false);
+        lint_tooltip_layer.put(&lint_tooltip, 0.0, 0.0);
+        editor_overlay.add_overlay(&lint_tooltip_layer);
 
         // Перерисовываем номера строк и слой пробелов при любой прокрутке.
         let gutter_for_scroll = gutter.clone();
@@ -716,6 +730,7 @@ impl Document {
             dirty_check_timeout: Cell::new(None),
             modified_handler: RefCell::new(None),
             lint_tooltip_overlay: editor_overlay.clone(),
+            lint_tooltip_layer,
             lint_tooltip,
             lint_tooltip_label,
             buffer,
