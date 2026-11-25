@@ -9,11 +9,14 @@ use super::editor::{
 };
 use super::gutter::setup_line_numbers_gutter;
 use super::links::{classify_link_uri, LinkTarget};
+use super::preview::SCROLL_TRACKER_SCRIPT;
 use super::search::{
     find_matches, next_match_index_after, parse_preview_search_result, replace_all_matches,
     wrapped_search_index,
 };
 use super::*;
+use webkit6::prelude::*;
+use webkit6::{UserContentInjectedFrames, UserScript, UserScriptInjectionTime};
 
     #[gtk4::test]
     fn test_indent_and_unindent() {
