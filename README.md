@@ -330,10 +330,15 @@ ASTER_FOREGROUND=1 aster test.md
   - `dialogs.rs` — сохранение, unsaved-диалоги и «О программе»;
   - `preferences.rs` — `adw::PreferencesWindow`;
   - `session.rs` — сохранение сессии и геометрии окна;
+  - `header.rs` — заголовочные кнопки и их синхронизация;
+  - `workspace.rs` — `WindowContext`, стартовые вкладки, закрытие и recovery;
   - `actions.rs` — регистрация действий `win.*` и связанных зависимостей.
 - [`src/document/mod.rs`](src/document/mod.rs) — модель и состояние одной вкладки:
   - Собственные `GtkTextBuffer`, `GtkTextView`, `WebKitWebView` и `adw::ViewStack` для каждого открытого файла.
-  - Загрузка/сохранение, режимы редактор/предпросмотр, заголовок вкладки, темы и сессионное состояние.
+  - Загрузка/сохранение, заголовок вкладки, темы и сессионное состояние.
+- [`src/document/view.rs`](src/document/view.rs) — построение дерева виджетов вкладки.
+- [`src/document/preview.rs`](src/document/preview.rs) — WebView, внедряемый скрипт и переключение режимов.
+- [`src/document/scroll.rs`](src/document/scroll.rs) — память прокрутки редактора и восстановление позиций.
 - [`src/document/search.rs`](src/document/search.rs) — поиск, замена и поиск по видимому HTML.
 - [`src/document/editor.rs`](src/document/editor.rs) — `Tab`/`Shift+Tab`, дублирование строки, клавиатурные границы и восстановление курсора.
 - [`src/document/gutter.rs`](src/document/gutter.rs) — номера строк.

@@ -311,10 +311,15 @@ The source code is thoroughly commented in Russian:
   - `dialogs.rs` — saving, unsaved-changes dialogs, and "About";
   - `preferences.rs` — `adw::PreferencesWindow`;
   - `session.rs` — session and window geometry persistence;
+  - `header.rs` — header bar buttons and active-tab synchronization;
+  - `workspace.rs` — `WindowContext`, startup tabs, close flow, and recovery;
   - `actions.rs` — registration of `win.*` actions and their dependencies.
 - [`src/document/mod.rs`](src/document/mod.rs) — model and state of a single tab:
   - Per-file `GtkTextBuffer`, `GtkTextView`, `WebKitWebView`, and `adw::ViewStack`.
-  - Loading/saving, editor/preview modes, tab title, themes, and session state.
+  - Loading/saving, tab title, themes, and session state.
+- [`src/document/view.rs`](src/document/view.rs) — building the tab widget tree.
+- [`src/document/preview.rs`](src/document/preview.rs) — WebView, injected user script, and mode switching.
+- [`src/document/scroll.rs`](src/document/scroll.rs) — editor scroll memory and position restoration.
 - [`src/document/search.rs`](src/document/search.rs) — search, replace, and visible-HTML search.
 - [`src/document/editor.rs`](src/document/editor.rs) — `Tab`/`Shift+Tab`, line duplication, keyboard boundaries, and cursor restoration.
 - [`src/document/gutter.rs`](src/document/gutter.rs) — line numbers.

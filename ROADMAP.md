@@ -54,37 +54,19 @@
 
 ## P1 — архитектура
 
-### 4. Разбить оставшиеся крупные файлы
+### 4. Разбить оставшиеся крупные файлы — ✅ реализовано
 
-Сейчас:
+Выполнено разбиение:
 
-- `src/window.rs` — ~1170 строк;
-- `src/document/mod.rs` — ~1283 строки.
-
-Предлагаемое разбиение:
-
-- `src/window/workspace.rs` — startup, добавление вкладок, close-flow;
+- `src/window/workspace.rs` — `WindowContext`, startup, close-flow, recovery;
 - `src/window/header.rs` — заголовочные кнопки и их синхронизация;
 - `src/document/view.rs` — построение UI вкладки;
-- `src/document/preview.rs` — WebView, загрузка HTML, ссылки;
+- `src/document/preview.rs` — WebView, загрузка HTML, переключение режимов;
 - `src/document/scroll.rs` — память прокрутки и восстановление позиций.
 
-Критерии готовности:
+### 5. Единый контекст окна — ✅ реализовано
 
-- ни один файл не превышает ~800–900 строк;
-- поведение не меняется;
-- тесты проходят без правок логики.
-
-### 5. Единый контекст окна
-
-Часть замыканий в `window.rs` повторяет одинаковые клоны `Rc`/виджетов. Можно ввести `WindowContext` с полями:
-
-- `window`, `tab_view`, `docs`, `settings`;
-- `persist_session`, `refresh_active_ui`, `add_document`;
-- `toast_overlay`, `show_toast`;
-- `closed_tabs`, `recovery`.
-
-Это уменьшит количество захватов и риск циклов владения.
+Введён `WindowContext` в `src/window/workspace.rs` с общими полями (`window`, `tab_view`, `docs`, `settings`, `toast_overlay`, `last_open_directory`, `closed_tabs`, флагами синхронизации и закрытия) и методами `show_toast`, `persist_session`, `save_window_geometry`, `save_recovery_now`.
 
 ## P2 — поиск, preview и производительность
 
