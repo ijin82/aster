@@ -139,6 +139,7 @@ pub(super) fn classify_link_uri(uri: &str, current_file: Option<&Path>) -> LinkT
 
     if let Some((base, fragment)) = uri.split_once('#') {
         if base.is_empty()
+            || base.eq_ignore_ascii_case("about:blank")
             || current_file
                 .map(|file| is_current_document_base(base, file))
                 .unwrap_or(false)
@@ -163,20 +164,25 @@ pub(super) fn classify_link_uri(uri: &str, current_file: Option<&Path>) -> LinkT
 pub(super) fn is_current_document_base(base: &str, current_file: &Path) -> bool {
     let file = current_file.to_string_lossy();
     let file_url = format!("file://{file}");
+    let encoded_file_url = gio::File::for_path(current_file).uri();
 
-    if base == file_url {
+    if base == file_url || base == encoded_file_url.as_str() {
         return true;
     }
 
     if let Some(parent) = current_file.parent() {
-        let parent = parent.to_string_lossy();
-        let dir_url = if parent.ends_with('/') {
-            format!("file://{parent}")
+        let parent_str = parent.to_string_lossy();
+        let dir_url = if parent_str.ends_with('/') {
+            format!("file://{parent_str}")
         } else {
-            format!("file://{parent}/")
+            format!("file://{parent_str}/")
         };
+        let encoded_dir_url = gio::File::for_path(parent).uri();
 
-        if base == dir_url || base.trim_end_matches('/') == dir_url.trim_end_matches('/') {
+        if base == dir_url
+            || base.trim_end_matches('/') == dir_url.trim_end_matches('/')
+            || base.trim_end_matches('/') == encoded_dir_url.as_str().trim_end_matches('/')
+        {
             return true;
         }
     }

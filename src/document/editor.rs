@@ -30,8 +30,11 @@ pub(super) fn apply_restored_cursor_position(
     let mut iter = buffer
         .iter_at_line(target_line)
         .unwrap_or_else(|| buffer.start_iter());
-    let chars_in_line = iter.chars_in_line();
-    let valid_col = (col as i32).min(chars_in_line).max(0);
+    // `chars_in_line()` включает завершающий `\n`, поэтому ограничиваемся
+    // длиной строки без перевода строки, иначе курсор уйдёт на следующую строку.
+    let mut line_end = iter;
+    line_end.forward_to_line_end();
+    let valid_col = (col as i32).min(line_end.line_offset()).max(0);
     iter.set_line_offset(valid_col);
     buffer.place_cursor(&iter);
 }
@@ -170,14 +173,18 @@ pub(super) fn setup_editor_key_handling(
 
         if is_forward_boundary || is_backward_boundary {
             let buffer = text_view.buffer();
-            let insert_mark = buffer.get_insert();
-            let iter = buffer.iter_at_mark(&insert_mark);
+            // При активном выделении (например, после Ctrl+A) стрелки
+            // должны снимать выделение, а не блокироваться.
+            if !buffer.has_selection() {
+                let insert_mark = buffer.get_insert();
+                let iter = buffer.iter_at_mark(&insert_mark);
 
-            if is_forward_boundary && iter.is_end() {
-                return glib::Propagation::Stop;
-            }
-            if is_backward_boundary && iter.is_start() {
-                return glib::Propagation::Stop;
+                if is_forward_boundary && iter.is_end() {
+                    return glib::Propagation::Stop;
+                }
+                if is_backward_boundary && iter.is_start() {
+                    return glib::Propagation::Stop;
+                }
             }
         }
 

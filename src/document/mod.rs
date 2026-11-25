@@ -1080,14 +1080,16 @@ impl Document {
         let is_dark_system = style_manager.is_dark();
 
         let base_uri = self.current_file.borrow().as_ref().and_then(|p| {
-            p.parent().and_then(|parent_dir| {
-                parent_dir.to_str().map(|s| {
-                    if s.ends_with('/') {
-                        format!("file://{s}")
-                    } else {
-                        format!("file://{s}/")
-                    }
-                })
+            p.parent().map(|parent_dir| {
+                // `gio::File::uri()` корректно кодирует пробелы, кириллицу и
+                // спецсимволы (`#`, `?`, `%`), чтобы WebKit не путал их с
+                // якорем или строкой запроса.
+                let uri = gio::File::for_path(parent_dir).uri().to_string();
+                if uri.ends_with('/') {
+                    uri
+                } else {
+                    format!("{uri}/")
+                }
             })
         });
 
@@ -1427,7 +1429,9 @@ impl Document {
             .buffer
             .iter_at_line(target_line)
             .unwrap_or_else(|| self.buffer.start_iter());
-        let valid_column = cursor_column.min(iter.chars_in_line()).max(0);
+        let mut line_end = iter;
+        line_end.forward_to_line_end();
+        let valid_column = cursor_column.min(line_end.line_offset()).max(0);
         iter.set_line_offset(valid_column);
         self.buffer.place_cursor(&iter);
 
@@ -1461,7 +1465,9 @@ impl Document {
             .buffer
             .iter_at_line(target_line)
             .unwrap_or_else(|| self.buffer.start_iter());
-        let valid_column = (column as i32).min(iter.chars_in_line()).max(0);
+        let mut line_end = iter;
+        line_end.forward_to_line_end();
+        let valid_column = (column as i32).min(line_end.line_offset()).max(0);
         iter.set_line_offset(valid_column);
         self.buffer.place_cursor(&iter);
 
@@ -1575,8 +1581,10 @@ impl Document {
 
     /// Обновляет подписи документа при смене языка интерфейса.
     pub fn apply_language(&self, lang: Language) {
+        // В `view_stack` добавлен `editor_overlay` (`lint_tooltip_overlay`),
+        // а не `editor_scroll`, поэтому страницу ищем именно по нему.
         self.view_stack
-            .page(&self.editor_scroll)
+            .page(&self.lint_tooltip_overlay)
             .set_title(Some(lang.tab_editor()));
         self.view_stack
             .page(&self.preview_scroll)

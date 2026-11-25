@@ -180,7 +180,14 @@ pub fn render_markdown_to_html(
     let body_width_percent = 100 - (safe_padding * 2);
 
     let base_tag = match base_url {
-        Some(url) => format!(r#"<base href="{url}">"#),
+        Some(url) => {
+            let escaped = url
+                .replace('&', "&amp;")
+                .replace('"', "&quot;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            format!(r#"<base href="{escaped}">"#)
+        }
         None => String::new(),
     };
 

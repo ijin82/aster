@@ -132,6 +132,46 @@ use super::*;
             classify_link_uri("https://example.com#target", Some(current)),
             LinkTarget::External("https://example.com#target".to_string())
         );
+
+        // Регрессия: безымянная вкладка резолвит #anchor через about:blank.
+        assert_eq!(
+            classify_link_uri("about:blank#intro", None),
+            LinkTarget::Anchor("intro".to_string())
+        );
+
+        // Регрессия: пути с пробелами и кириллицей WebKit percent-кодирует.
+        let unicode_file = std::path::Path::new("/tmp/Мои заметки/файл 1.md");
+        assert_eq!(
+            classify_link_uri(
+                "file:///tmp/%D0%9C%D0%BE%D0%B8%20%D0%B7%D0%B0%D0%BC%D0%B5%D1%82%D0%BA%D0%B8/#sec",
+                Some(unicode_file)
+            ),
+            LinkTarget::Anchor("sec".to_string())
+        );
+    }
+
+    #[gtk4::test]
+    fn test_apply_language_updates_view_stack_without_panic() {
+        let settings = Rc::new(RefCell::new(AppSettings::default()));
+        let doc = Document::new(settings, None, false).expect("create document");
+        doc.apply_language(Language::from_code("en"));
+        doc.apply_language(Language::from_code("ru"));
+    }
+
+    #[gtk4::test]
+    fn test_restored_cursor_column_clamps_before_newline() {
+        let settings = Rc::new(RefCell::new(AppSettings::default()));
+        let path = std::path::Path::new("/tmp/aster-clamp-test.md");
+        let key = get_file_canonical_key(path);
+        settings.borrow_mut().file_cursor_positions.insert(key, (0, 50));
+
+        let buffer = gtk4::TextBuffer::new(None);
+        buffer.set_text("abc\ndef\n");
+        apply_restored_cursor_position(&settings, &buffer, path);
+
+        let iter = buffer.iter_at_mark(&buffer.get_insert());
+        assert_eq!(iter.line(), 0);
+        assert_eq!(iter.line_offset(), 3);
     }
 
     #[gtk4::test]
