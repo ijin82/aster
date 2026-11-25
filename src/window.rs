@@ -2,40 +2,40 @@
 //!
 //! Начиная с этого модуля окно не хранит текст документа. Каждая вкладка —
 //! это независимый [`crate::document::Document`] со своим буфером, WebKit-
-//! предпросмотром и позициями прокрутки. Окно отвечает только за:
-//! - заголовочную панель и переключатель режимов;
-//! - `adw::TabView` / `adw::TabBar` и работу с вкладками;
-//! - меню, горячие клавиши и диалоги;
-//! - восстановление и сохранение сессии.
+//! предпросмотром и позициями прокрутки. Окно связывает подсистемы:
+//! - заголовочную панель (`window/header.rs`);
+//! - контекст окна, стартовые вкладки и закрытие (`window/workspace.rs`);
+//! - меню, горячие клавиши и диалоги (`window/menus.rs`, `actions.rs`, `dialogs.rs`);
+//! - сохранение сессии и геометрии (`window/session.rs`).
 
 use adw::prelude::*;
 use gtk4::gio;
-use gtk4::glib;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 
 use crate::document::{self, Document, FileChange};
 use crate::i18n::Language;
-use crate::recovery::{self, RecoveryDraft};
 use crate::settings::AppSettings;
 
 mod actions;
 mod dialogs;
+mod header;
 mod menus;
 mod preferences;
 mod session;
 mod style;
 mod tabs;
+mod workspace;
 
 use actions::{install_actions, ActionContext};
-use dialogs::{
-    save_document, save_documents_sequentially, show_file_conflict_dialog,
-    show_unsaved_changes_dialog, FileConflictChoice,
-};
-use menus::{rebuild_main_menu, rebuild_tab_menu};
+use dialogs::{save_document, show_file_conflict_dialog, FileConflictChoice};
+use header::{apply_header_language, build_header, sync_header_with_active_tab};
 use style::{apply_color_scheme, apply_editor_style_css, disable_sound_feedback};
 use tabs::{active_document, parent_directory};
+use workspace::{
+    connect_tab_and_close_handlers, restore_startup_tabs, schedule_recovery_save, WindowContext,
+};
 
 /// Создает главное окно приложения.
 ///
@@ -53,7 +53,6 @@ pub fn build_window(
     // Aster — редактор Markdown, поэтому любые системные звуки интерфейса
     // (error bell, звуки событий и звуковая обратная связь ввода) отключены.
     disable_sound_feedback();
-
     apply_color_scheme(&settings.borrow().theme);
 
     let window = adw::ApplicationWindow::builder()
@@ -69,12 +68,6 @@ pub fn build_window(
     }
 
     // --- CSS редактора: тема и шрифт ---
-    //
-    // ВАЖНО: шрифт задается именно CSS-правилом, а не `GtkTextTag`.
-    // `GtkTextTag` применяется к диапазону существующих символов, поэтому
-    // текст, набранный в пустом буфере или после удаления всего текста,
-    // оставался без тега и отображался системным шрифтом. CSS-правило
-    // действует на весь виджет, включая любой новый символ.
     let editor_css_provider = gtk4::CssProvider::new();
     if let Some(display) = gtk4::gdk::Display::default() {
         gtk4::style_context_add_provider_for_display(
@@ -95,226 +88,106 @@ pub fn build_window(
     }
 
     let current_lang = Language::from_code(&settings.borrow().language);
+    let header = build_header(current_lang);
 
-    // --- Корневая разметка ---
-    let root_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-    let header_bar = adw::HeaderBar::new();
-
-    let open_btn = gtk4::Button::from_icon_name("document-open-symbolic");
-    open_btn.set_tooltip_text(Some(current_lang.tooltip_open()));
-    header_bar.pack_start(&open_btn);
-
-    let save_btn = gtk4::Button::from_icon_name("document-save-symbolic");
-    save_btn.set_tooltip_text(Some(current_lang.tooltip_save()));
-    header_bar.pack_start(&save_btn);
-
-    // Переключатель «Редактор / Просмотр» применяется к активной вкладке.
-    let edit_btn = gtk4::ToggleButton::builder()
-        .icon_name("document-edit-symbolic")
-        .tooltip_text(current_lang.tooltip_edit_mode())
-        .active(true)
-        .build();
-    let preview_btn = gtk4::ToggleButton::builder()
-        .icon_name("view-reveal-symbolic")
-        .tooltip_text(current_lang.tooltip_preview_mode())
-        .group(&edit_btn)
-        .build();
-    let switch_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-    switch_box.add_css_class("linked");
-    switch_box.append(&edit_btn);
-    switch_box.append(&preview_btn);
-    header_bar.set_title_widget(Some(&switch_box));
-
-    let search_btn = gtk4::ToggleButton::builder()
-        .icon_name("edit-find-symbolic")
-        .tooltip_text(current_lang.tooltip_search())
-        .build();
-    header_bar.pack_end(&search_btn);
-
-    let menu_btn = gtk4::MenuButton::builder()
-        .icon_name("open-menu-symbolic")
-        .tooltip_text(current_lang.tooltip_menu())
-        .build();
-
-    let menu = gio::Menu::new();
-    rebuild_main_menu(&menu, current_lang);
-    menu_btn.set_menu_model(Some(&menu));
-    header_bar.pack_end(&menu_btn);
-
-    // --- Вкладки ---
+    // --- Вкладки и корневая разметка ---
     let tab_view = adw::TabView::new();
     let tab_bar = adw::TabBar::new();
     tab_bar.set_view(Some(&tab_view));
-    // При одной вкладке полоса вкладок скрыта, при двух и более — появляется.
     tab_bar.set_autohide(true);
+    tab_bar.set_end_action_widget(Some(&header.new_tab_btn));
+    tab_view.set_menu_model(Some(&header.tab_menu));
 
-    let new_tab_btn = gtk4::Button::from_icon_name("tab-new-symbolic");
-    new_tab_btn.add_css_class("flat");
-    new_tab_btn.set_tooltip_text(Some(current_lang.tooltip_new_tab()));
-    tab_bar.set_end_action_widget(Some(&new_tab_btn));
-
-    let tab_menu = gio::Menu::new();
-    rebuild_tab_menu(&tab_menu, current_lang);
-    tab_view.set_menu_model(Some(&tab_menu));
-
-    root_box.append(&header_bar);
+    let root_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    root_box.append(&header.header_bar);
     root_box.append(&tab_bar);
     root_box.append(&tab_view);
 
-    // Неблокирующие уведомления (например, ошибки чтения/записи файла)
-    // показываются поверх всего содержимого окна.
     let toast_overlay = adw::ToastOverlay::new();
     toast_overlay.set_child(Some(&root_box));
     window.set_content(Some(&toast_overlay));
 
-    let show_toast: Rc<dyn Fn(&str)> = {
-        let toast_overlay = toast_overlay.clone();
-        Rc::new(move |message: &str| {
-            let toast = adw::Toast::new(message);
-            toast.set_timeout(6);
-            toast_overlay.add_toast(toast);
-        })
+    // --- Единый контекст окна ---
+    let ctx = WindowContext {
+        window: window.clone(),
+        tab_view: tab_view.clone(),
+        docs: Rc::new(RefCell::new(Vec::new())),
+        settings: settings.clone(),
+        toast_overlay,
+        last_open_directory: Rc::new(RefCell::new(None)),
+        closed_tabs: Rc::new(RefCell::new(Vec::new())),
+        recovery_scheduled: Rc::new(Cell::new(false)),
+        suppress_mode_sync: Rc::new(Cell::new(false)),
+        suppress_search_sync: Rc::new(Cell::new(false)),
+        is_force_closing: Rc::new(Cell::new(false)),
+        is_closing: Rc::new(Cell::new(false)),
     };
-
-    // --- Разделяемое состояние окна ---
-    let docs: Rc<RefCell<Vec<Rc<Document>>>> = Rc::new(RefCell::new(Vec::new()));
-    // Каталог последнего открытого/активного файла. Нужен, чтобы диалог
-    // открытия начинался в той же папке, даже если текущая вкладка безымянная.
-    let last_open_directory: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(None));
-    // Стек закрытых файлов текущей сессии для Ctrl+Shift+T.
-    let closed_tabs: Rc<RefCell<Vec<PathBuf>>> = Rc::new(RefCell::new(Vec::new()));
-    const MAX_CLOSED_TABS: usize = 50;
-    // Защита от частой записи recovery.json при каждом нажатии клавиши.
-    let recovery_scheduled = Rc::new(Cell::new(false));
-    let suppress_mode_sync = Rc::new(Cell::new(false));
-    let suppress_search_sync = Rc::new(Cell::new(false));
-    let is_force_closing = Rc::new(Cell::new(false));
-    let is_closing = Rc::new(Cell::new(false));
 
     // --- Обновление заголовка и кнопок для активной вкладки ---
-    let refresh_active_ui = {
-        let window = window.clone();
-        let save_btn = save_btn.clone();
-        let edit_btn = edit_btn.clone();
-        let preview_btn = preview_btn.clone();
-        let search_btn = search_btn.clone();
-        let tab_view = tab_view.clone();
-        let docs = docs.clone();
-        let settings = settings.clone();
-        let suppress_mode_sync = suppress_mode_sync.clone();
-        let suppress_search_sync = suppress_search_sync.clone();
-
+    let refresh_active_ui: Rc<dyn Fn()> = {
+        let ctx = ctx.clone();
+        let header = header.clone();
         Rc::new(move || {
-            let lang = Language::from_code(&settings.borrow().language);
-            let Some(doc) = active_document(&tab_view, &docs) else {
-                window.set_title(Some("Aster"));
-                save_btn.set_sensitive(false);
-                edit_btn.set_sensitive(false);
-                preview_btn.set_sensitive(false);
-                search_btn.set_sensitive(false);
-                return;
-            };
-
-            save_btn.set_sensitive(true);
-            edit_btn.set_sensitive(true);
-            preview_btn.set_sensitive(true);
-            search_btn.set_sensitive(true);
-
-            window.set_title(Some(&format!("{} — Aster", doc.window_title(lang))));
-
-            let is_modified = doc.is_modified.get();
-            if is_modified {
-                save_btn.add_css_class("suggested-action");
-                save_btn.set_tooltip_text(Some(lang.tooltip_save_unsaved()));
-            } else {
-                save_btn.remove_css_class("suggested-action");
-                save_btn.set_tooltip_text(Some(lang.tooltip_save()));
-            }
-
-            // Синхронизируем кнопки режима с состоянием активной вкладки.
-            // Флаг подавляет обработчики `toggled`, чтобы программное
-            // переключение не вызывало повторный рендеринг предпросмотра.
-            suppress_mode_sync.set(true);
-            edit_btn.set_active(!doc.is_preview_active.get());
-            preview_btn.set_active(doc.is_preview_active.get());
-            suppress_mode_sync.set(false);
-
-            suppress_search_sync.set(true);
-            search_btn.set_active(doc.search_bar.is_search_mode());
-            suppress_search_sync.set(false);
+            sync_header_with_active_tab(
+                &ctx.window,
+                &header,
+                &ctx.tab_view,
+                &ctx.docs,
+                &ctx.settings,
+                &ctx.suppress_mode_sync,
+                &ctx.suppress_search_sync,
+            );
         })
     };
 
-    // --- Сохранение сессии и позиций всех документов ---
-    let persist_session = {
-        let settings = settings.clone();
-        let docs = docs.clone();
-        let tab_view = tab_view.clone();
-        Rc::new(move || {
-            session::persist_session(&settings, &docs, &tab_view);
-        })
-    };
-
-    // --- Аварийное сохранение безымянных черновиков ---
-    let save_recovery_now: Rc<dyn Fn()> = {
-        let docs = docs.clone();
-        Rc::new(move || {
-            recovery::save(&collect_recovery_drafts(&docs));
-        })
+    let persist_session: Rc<dyn Fn()> = {
+        let ctx = ctx.clone();
+        Rc::new(move || ctx.persist_session())
     };
 
     // --- Добавление документа во вкладку ---
     let add_document: Rc<dyn Fn(Option<PathBuf>, bool) -> Option<adw::TabPage>> = {
-        let settings = settings.clone();
-        let docs = docs.clone();
-        let tab_view = tab_view.clone();
+        let ctx = ctx.clone();
         let refresh_active_ui = refresh_active_ui.clone();
-        let suppress_search_sync = suppress_search_sync.clone();
-        let search_btn = search_btn.clone();
-        let show_toast = show_toast.clone();
-        let settings_for_error = settings.clone();
-        // Слабая ссылка: конфликтный диалог не должен удерживать окно.
-        let window_for_conflict = window.downgrade();
-        let last_open_directory = last_open_directory.clone();
-        let docs_for_recovery = Rc::downgrade(&docs);
-        let recovery_scheduled_for_change = recovery_scheduled.clone();
-        let persist_for_file = Rc::downgrade(&persist_session);
+        let search_btn = header.search_btn.clone();
+        let window_weak = ctx.window.downgrade();
+        let docs_weak = Rc::downgrade(&ctx.docs);
+        let persist_weak = Rc::downgrade(&persist_session);
 
         Rc::new(move |path: Option<PathBuf>, restore_mode: bool| {
             // Если файл уже открыт, не создаем дубликат, а переключаемся на него.
             if let Some(ref path) = path {
                 let key = document::get_file_canonical_key(path);
-                let existing = docs
+                let existing = ctx
+                    .docs
                     .borrow()
                     .iter()
                     .find(|doc| doc.canonical_key().as_deref() == Some(key.as_str()))
                     .cloned();
                 if let Some(doc) = existing {
                     if let Some(page) = doc.tab_page.borrow().clone() {
-                        tab_view.set_selected_page(&page);
+                        ctx.tab_view.set_selected_page(&page);
                         return Some(page);
                     }
                 }
             }
 
             let path_for_directory = path.as_deref().and_then(parent_directory);
-            let doc = match Document::new(settings.clone(), path, restore_mode) {
+            let doc = match Document::new(ctx.settings.clone(), path, restore_mode) {
                 Ok(doc) => doc,
                 Err(error) => {
-                    let lang = Language::from_code(&settings_for_error.borrow().language);
-                    show_toast(&format!("{}: {error}", lang.error_open_file()));
+                    let lang = Language::from_code(&ctx.settings.borrow().language);
+                    ctx.show_toast(&format!("{}: {error}", lang.error_open_file()));
                     return None;
                 }
             };
             if let Some(directory) = path_for_directory {
-                *last_open_directory.borrow_mut() = Some(directory);
+                *ctx.last_open_directory.borrow_mut() = Some(directory);
             }
-            let page = tab_view.append(&doc.root);
+            let page = ctx.tab_view.append(&doc.root);
             *doc.tab_page.borrow_mut() = Some(page.clone());
             doc.update_tab_title();
 
-            // При отложенном пересчёте dirty-состояния (например, после
-            // Ctrl+Z) обновляем кнопку сохранения и заголовок окна.
             {
                 let refresh_for_modified = Rc::downgrade(&refresh_active_ui);
                 doc.set_modified_handler(Rc::new(move || {
@@ -324,19 +197,15 @@ pub fn build_window(
                 }));
             }
 
-            // Следим за изменениями файла на диске. Слабые ссылки на
-            // callbacks окна нужны, чтобы Document не удерживал docs и
-            // refresh_active_ui, иначе получился бы цикл владения.
+            // Следим за изменениями файла на диске. Слабые ссылки разрывают
+            // цикл владения Document -> handler -> WindowContext -> docs.
             let weak_doc_for_file = Rc::downgrade(&doc);
-            let settings_for_file = settings.clone();
+            let settings_for_file = ctx.settings.clone();
             let refresh_for_file = Rc::downgrade(&refresh_active_ui);
-            let show_toast_for_file = show_toast.clone();
-            let persist_for_file = persist_for_file.clone();
-            let window_for_conflict = window_for_conflict.clone();
-            // Флаг живёт вместе с документом: конфликт в одной вкладке
-            // не должен открывать второй диалог, пока первый не закрыт.
+            let persist_for_file = persist_weak.clone();
+            let toast_overlay_for_file = ctx.toast_overlay.clone();
+            let window_for_conflict = window_weak.clone();
             let conflict_dialog_visible = Rc::new(Cell::new(false));
-            let conflict_dialog_for_file = conflict_dialog_visible.clone();
             doc.watch_file(Rc::new(move |change| {
                 let Some(doc) = weak_doc_for_file.upgrade() else {
                     return;
@@ -345,11 +214,6 @@ pub fn build_window(
 
                 match change {
                     FileChange::Reloaded => {
-                        // Файл перечитан без потери правок. Специально
-                        // не показываем тост: при сохранении из другого
-                        // редактора события идут сериями, и уведомление
-                        // на каждое превращается в поток закрывающихся
-                        // плашек. Обновления интерфейса достаточно.
                         if let Some(refresh) = refresh_for_file.upgrade() {
                             refresh();
                         }
@@ -358,14 +222,13 @@ pub fn build_window(
                         }
                     }
                     FileChange::Conflict => {
-                        if conflict_dialog_for_file.get() {
+                        if conflict_dialog_visible.get() {
                             return;
                         }
-
                         let Some(window) = window_for_conflict.upgrade() else {
                             return;
                         };
-                        conflict_dialog_for_file.set(true);
+                        conflict_dialog_visible.set(true);
 
                         let file_name = doc
                             .current_file
@@ -376,20 +239,18 @@ pub fn build_window(
                             .unwrap_or("document.md")
                             .to_string();
 
-                        let flag_for_dialog = conflict_dialog_for_file.clone();
+                        let flag = conflict_dialog_visible.clone();
                         let doc_for_reload = doc.clone();
                         let refresh_for_reload = refresh_for_file.clone();
                         let persist_for_reload = persist_for_file.clone();
-                        let show_toast_for_reload = show_toast_for_file.clone();
+                        let toast_overlay = toast_overlay_for_file.clone();
                         let settings_for_reload = settings_for_file.clone();
 
                         show_file_conflict_dialog(&window, lang, &file_name, move |choice| {
-                            flag_for_dialog.set(false);
-
+                            flag.set(false);
                             if choice == FileConflictChoice::KeepEditing {
                                 return;
                             }
-
                             match doc_for_reload.reload_from_disk() {
                                 Ok(()) => {
                                     if let Some(refresh) = refresh_for_reload.upgrade() {
@@ -403,10 +264,12 @@ pub fn build_window(
                                     let lang = Language::from_code(
                                         &settings_for_reload.borrow().language,
                                     );
-                                    show_toast_for_reload(&format!(
+                                    let toast = adw::Toast::new(&format!(
                                         "{}: {error}",
                                         lang.error_reload_file()
                                     ));
+                                    toast.set_timeout(6);
+                                    toast_overlay.add_toast(toast);
                                 }
                             }
                         });
@@ -414,13 +277,12 @@ pub fn build_window(
                 }
             }));
 
-            // Изменение текста активной вкладки должно сразу обновить
-            // точку в заголовке и подсветку кнопки «Сохранить».
+            // Обновление заголовка и отложенное сохранение безымянного черновика.
             let weak_doc = Rc::downgrade(&doc);
-            let tab_view_for_change = tab_view.clone();
+            let tab_view_for_change = ctx.tab_view.clone();
             let refresh_for_change = refresh_active_ui.clone();
-            let docs_for_recovery_change = docs_for_recovery.clone();
-            let recovery_scheduled_for_buffer = recovery_scheduled_for_change.clone();
+            let docs_for_recovery = docs_weak.clone();
+            let recovery_scheduled = ctx.recovery_scheduled.clone();
             doc.buffer.connect_changed(move |_| {
                 if let Some(doc) = weak_doc.upgrade() {
                     let is_active = tab_view_for_change
@@ -431,23 +293,20 @@ pub fn build_window(
                         refresh_for_change();
                     }
 
-                    // Черновики безымянных вкладок сохраняем с задержкой,
-                    // чтобы не писать файл на каждый символ.
                     if doc.current_file.borrow().is_none() {
                         schedule_recovery_save(
-                            docs_for_recovery_change.clone(),
-                            recovery_scheduled_for_buffer.clone(),
+                            docs_for_recovery.clone(),
+                            recovery_scheduled.clone(),
                         );
                     }
                 }
             });
 
-            // Закрытие панели поиска клавишей Esc должно сбрасывать
-            // соответствующую кнопку в заголовке.
+            // Закрытие панели поиска клавишей Esc сбрасывает кнопку в заголовке.
             let weak_doc = Rc::downgrade(&doc);
-            let tab_view_for_search = tab_view.clone();
+            let tab_view_for_search = ctx.tab_view.clone();
             let search_btn_for_sync = search_btn.clone();
-            let suppress_for_search = suppress_search_sync.clone();
+            let suppress_for_search = ctx.suppress_search_sync.clone();
             doc.search_bar
                 .connect_search_mode_enabled_notify(move |bar| {
                     if let Some(doc) = weak_doc.upgrade() {
@@ -463,8 +322,8 @@ pub fn build_window(
                     }
                 });
 
-            docs.borrow_mut().push(doc.clone());
-            tab_view.set_selected_page(&page);
+            ctx.docs.borrow_mut().push(doc.clone());
+            ctx.tab_view.set_selected_page(&page);
             refresh_active_ui();
 
             if doc.is_preview_active.get() {
@@ -478,65 +337,36 @@ pub fn build_window(
     };
 
     // --- Локализация заголовка, меню и всех открытых документов ---
-    let update_ui_language = {
-        let open_btn = open_btn.clone();
-        let save_btn = save_btn.clone();
-        let edit_btn = edit_btn.clone();
-        let preview_btn = preview_btn.clone();
-        let search_btn = search_btn.clone();
-        let menu_btn = menu_btn.clone();
-        let new_tab_btn = new_tab_btn.clone();
-        let menu = menu.clone();
-        let tab_menu = tab_menu.clone();
-        let docs = docs.clone();
+    let update_ui_language: Rc<dyn Fn(Language)> = {
+        let header = header.clone();
+        let docs = ctx.docs.clone();
         let refresh_active_ui = refresh_active_ui.clone();
-
         Rc::new(move |lang: Language| {
-            open_btn.set_tooltip_text(Some(lang.tooltip_open()));
-            save_btn.set_tooltip_text(Some(lang.tooltip_save()));
-            edit_btn.set_tooltip_text(Some(lang.tooltip_edit_mode()));
-            preview_btn.set_tooltip_text(Some(lang.tooltip_preview_mode()));
-            search_btn.set_tooltip_text(Some(lang.tooltip_search()));
-            menu_btn.set_tooltip_text(Some(lang.tooltip_menu()));
-            new_tab_btn.set_tooltip_text(Some(lang.tooltip_new_tab()));
-
-            rebuild_main_menu(&menu, lang);
-            rebuild_tab_menu(&tab_menu, lang);
-
-            for doc in docs.borrow().iter() {
-                doc.apply_language(lang);
-            }
+            apply_header_language(&header, &docs, lang);
             refresh_active_ui();
         })
     };
 
     // --- Диалог открытия файла ---
-    let show_open_dialog = {
-        let window = window.clone();
-        let settings = settings.clone();
+    let show_open_dialog: Rc<dyn Fn()> = {
+        let ctx = ctx.clone();
         let add_document = add_document.clone();
-        let persist_session = persist_session.clone();
         let refresh_active_ui = refresh_active_ui.clone();
-        let tab_view = tab_view.clone();
-        let docs = docs.clone();
-        let last_open_directory = last_open_directory.clone();
 
         Rc::new(move || {
-            let lang = Language::from_code(&settings.borrow().language);
+            let lang = Language::from_code(&ctx.settings.borrow().language);
             let dialog = gtk4::FileDialog::builder()
                 .title(lang.dialog_open_title())
                 .build();
 
-            // Начинаем с папки активного документа. Если активная вкладка
-            // безымянная — с папки последнего открытого файла.
-            let initial_directory = active_document(&tab_view, &docs)
+            let initial_directory = active_document(&ctx.tab_view, &ctx.docs)
                 .and_then(|doc| {
                     doc.current_file
                         .borrow()
                         .as_ref()
                         .and_then(|path| parent_directory(path))
                 })
-                .or_else(|| last_open_directory.borrow().clone());
+                .or_else(|| ctx.last_open_directory.borrow().clone());
             if let Some(directory) = initial_directory {
                 dialog.set_initial_folder(Some(&gio::File::for_path(directory)));
             }
@@ -550,10 +380,10 @@ pub fn build_window(
             dialog.set_filters(Some(&filters));
 
             let add_document = add_document.clone();
-            let persist_session = persist_session.clone();
+            let ctx_done = ctx.clone();
             let refresh_active_ui = refresh_active_ui.clone();
             dialog.open_multiple(
-                Some(&window),
+                Some(&ctx.window),
                 gio::Cancellable::NONE,
                 move |res| {
                     let Ok(files) = res else {
@@ -572,7 +402,7 @@ pub fn build_window(
                         }
                     }
 
-                    persist_session();
+                    ctx_done.persist_session();
                     refresh_active_ui();
                 },
             );
@@ -580,30 +410,19 @@ pub fn build_window(
     };
 
     // --- Сохранение активного документа ---
-    let save_active_document = {
-        let window = window.clone();
-        let tab_view = tab_view.clone();
-        let docs = docs.clone();
-        let persist_session = persist_session.clone();
+    let save_active_document: Rc<dyn Fn(bool)> = {
+        let ctx = ctx.clone();
         let refresh_active_ui = refresh_active_ui.clone();
-        let settings = settings.clone();
-        let show_toast = show_toast.clone();
-        let last_open_directory = last_open_directory.clone();
-        let save_recovery_now = save_recovery_now.clone();
 
         Rc::new(move |save_as: bool| {
-            let Some(doc) = active_document(&tab_view, &docs) else {
+            let Some(doc) = active_document(&ctx.tab_view, &ctx.docs) else {
                 return;
             };
-            let persist_session = persist_session.clone();
+            let ctx_done = ctx.clone();
             let refresh_active_ui = refresh_active_ui.clone();
-            let settings = settings.clone();
-            let show_toast = show_toast.clone();
-            let last_open_directory = last_open_directory.clone();
             let doc_for_directory = doc.clone();
-            let save_recovery_for_save = save_recovery_now.clone();
             save_document(
-                &window,
+                &ctx.window,
                 &doc,
                 save_as,
                 Rc::new(move |result| match result {
@@ -614,16 +433,16 @@ pub fn build_window(
                             .as_ref()
                             .and_then(|path| parent_directory(path))
                         {
-                            *last_open_directory.borrow_mut() = Some(directory);
+                            *ctx_done.last_open_directory.borrow_mut() = Some(directory);
                         }
-                        save_recovery_for_save();
-                        persist_session();
+                        ctx_done.save_recovery_now();
+                        ctx_done.persist_session();
                         refresh_active_ui();
                     }
                     Ok(false) => {}
                     Err(error) => {
-                        let lang = Language::from_code(&settings.borrow().language);
-                        show_toast(&format!("{}: {error}", lang.error_save_file()));
+                        let lang = Language::from_code(&ctx_done.settings.borrow().language);
+                        ctx_done.show_toast(&format!("{}: {error}", lang.error_save_file()));
                     }
                 }),
             );
@@ -631,74 +450,68 @@ pub fn build_window(
     };
 
     let actions = install_actions(ActionContext {
-        window: window.clone(),
-        header_bar: header_bar.clone(),
-        tab_view: tab_view.clone(),
-        docs: docs.clone(),
-        settings: settings.clone(),
-        editor_css_provider: editor_css_provider.clone(),
+        window: ctx.window.clone(),
+        header_bar: header.header_bar.clone(),
+        tab_view: ctx.tab_view.clone(),
+        docs: ctx.docs.clone(),
+        settings: ctx.settings.clone(),
+        editor_css_provider,
         add_document: add_document.clone(),
         persist_session: persist_session.clone(),
         refresh_active_ui: refresh_active_ui.clone(),
         show_open_dialog: show_open_dialog.clone(),
         save_active_document: save_active_document.clone(),
-        update_ui_language: update_ui_language.clone(),
-        closed_tabs: closed_tabs.clone(),
+        update_ui_language,
+        closed_tabs: ctx.closed_tabs.clone(),
     });
     window.insert_action_group("win", Some(&actions));
 
     // --- Обработчики кнопок заголовка ---
     {
         let show_open_dialog = show_open_dialog.clone();
-        open_btn.connect_clicked(move |_| show_open_dialog());
+        header.open_btn.connect_clicked(move |_| show_open_dialog());
     }
     {
         let save_active_document = save_active_document.clone();
-        save_btn.connect_clicked(move |_| save_active_document(false));
+        header
+            .save_btn
+            .connect_clicked(move |_| save_active_document(false));
     }
     {
-        let tab_view = tab_view.clone();
-        let docs = docs.clone();
-        let suppress_mode_sync = suppress_mode_sync.clone();
-        let persist_session = persist_session.clone();
+        let ctx = ctx.clone();
         let refresh_active_ui = refresh_active_ui.clone();
-        edit_btn.connect_toggled(move |btn| {
-            if !btn.is_active() || suppress_mode_sync.get() {
+        header.edit_btn.connect_toggled(move |btn| {
+            if !btn.is_active() || ctx.suppress_mode_sync.get() {
                 return;
             }
-            if let Some(doc) = active_document(&tab_view, &docs) {
+            if let Some(doc) = active_document(&ctx.tab_view, &ctx.docs) {
                 doc.switch_to_editor();
-                persist_session();
+                ctx.persist_session();
                 refresh_active_ui();
             }
         });
     }
     {
-        let tab_view = tab_view.clone();
-        let docs = docs.clone();
-        let suppress_mode_sync = suppress_mode_sync.clone();
-        let persist_session = persist_session.clone();
+        let ctx = ctx.clone();
         let refresh_active_ui = refresh_active_ui.clone();
-        preview_btn.connect_toggled(move |btn| {
-            if !btn.is_active() || suppress_mode_sync.get() {
+        header.preview_btn.connect_toggled(move |btn| {
+            if !btn.is_active() || ctx.suppress_mode_sync.get() {
                 return;
             }
-            if let Some(doc) = active_document(&tab_view, &docs) {
+            if let Some(doc) = active_document(&ctx.tab_view, &ctx.docs) {
                 doc.switch_to_preview();
-                persist_session();
+                ctx.persist_session();
                 refresh_active_ui();
             }
         });
     }
     {
-        let tab_view = tab_view.clone();
-        let docs = docs.clone();
-        let suppress_search_sync = suppress_search_sync.clone();
-        search_btn.connect_toggled(move |btn| {
-            if suppress_search_sync.get() {
+        let ctx = ctx.clone();
+        header.search_btn.connect_toggled(move |btn| {
+            if ctx.suppress_search_sync.get() {
                 return;
             }
-            if let Some(doc) = active_document(&tab_view, &docs) {
+            if let Some(doc) = active_document(&ctx.tab_view, &ctx.docs) {
                 doc.search_bar.set_search_mode(btn.is_active());
                 if btn.is_active() {
                     doc.search_entry.grab_focus();
@@ -707,367 +520,23 @@ pub fn build_window(
         });
     }
     {
+        let ctx = ctx.clone();
         let add_document = add_document.clone();
-        let persist_session = persist_session.clone();
         let refresh_active_ui = refresh_active_ui.clone();
-        new_tab_btn.connect_clicked(move |_| {
+        header.new_tab_btn.connect_clicked(move |_| {
             add_document(None, false);
-            persist_session();
+            ctx.persist_session();
             refresh_active_ui();
         });
     }
 
-    // --- Восстановление сессии / начальных файлов ---
-    let recovery_drafts = recovery::load();
-    let mut opened_pages: Vec<adw::TabPage> = Vec::new();
-    let mut selected_page: Option<adw::TabPage> = None;
-
-    if restore_session {
-        let (session_files, active_index) = {
-            let state = settings.borrow();
-            (state.session_files.clone(), state.session_active_document)
-        };
-
-        for (index, path) in session_files.iter().enumerate() {
-            let path = PathBuf::from(path);
-            if !path.is_file() {
-                continue;
-            }
-            if let Some(page) = add_document(Some(path), true) {
-                if index == active_index {
-                    selected_page = Some(page.clone());
-                }
-                opened_pages.push(page);
-            }
-        }
-    }
-
-    if opened_pages.is_empty() {
-        for path in initial_files {
-            if !path.is_file() {
-                continue;
-            }
-            if let Some(page) = add_document(Some(path), false) {
-                opened_pages.push(page);
-            }
-        }
-    }
-
-    let mut recovered_count = 0usize;
-    for draft in recovery_drafts {
-        if let Some(page) = add_document(None, false) {
-            if let Some(doc) = docs
-                .borrow()
-                .iter()
-                .find(|doc| doc.matches_page(&page))
-                .cloned()
-            {
-                doc.restore_draft(&draft.content, draft.cursor_line, draft.cursor_column);
-                recovered_count += 1;
-            }
-            opened_pages.push(page.clone());
-            selected_page = Some(page);
-        }
-    }
-    if recovered_count > 0 {
-        let lang = Language::from_code(&settings.borrow().language);
-        show_toast(&lang.drafts_recovered(recovered_count));
-    }
-
-    if opened_pages.is_empty() {
-        if let Some(page) = add_document(None, false) {
-            opened_pages.push(page);
-        }
-    }
-
-    // Активной делаем вкладку из сессии, иначе первую открытую.
-    let active_page = selected_page.or_else(|| opened_pages.first().cloned());
-    if let Some(page) = active_page {
-        tab_view.set_selected_page(&page);
-    }
-    if let Some(doc) = active_document(&tab_view, &docs) {
-        if let Some(directory) = doc
-            .current_file
-            .borrow()
-            .as_ref()
-            .and_then(|path| parent_directory(path))
-        {
-            *last_open_directory.borrow_mut() = Some(directory);
-        }
-    }
-
-    // --- Сигналы вкладок (подключаем после восстановления стартовых вкладок) ---
-    {
-        let persist_session = persist_session.clone();
-        let refresh_active_ui = refresh_active_ui.clone();
-        let tab_view_for_directory = tab_view.clone();
-        let docs_for_directory = docs.clone();
-        let last_open_directory = last_open_directory.clone();
-        tab_view.connect_selected_page_notify(move |_| {
-            if let Some(doc) = active_document(&tab_view_for_directory, &docs_for_directory) {
-                if let Some(directory) = doc
-                    .current_file
-                    .borrow()
-                    .as_ref()
-                    .and_then(|path| parent_directory(path))
-                {
-                    *last_open_directory.borrow_mut() = Some(directory);
-                }
-            }
-            persist_session();
-            refresh_active_ui();
-        });
-    }
-
-    {
-        let window = window.clone();
-        let docs = docs.clone();
-        let settings = settings.clone();
-        let tab_view = tab_view.clone();
-        let persist_session = persist_session.clone();
-        let refresh_active_ui = refresh_active_ui.clone();
-        let show_toast_for_close_page = show_toast.clone();
-        let save_recovery_now = save_recovery_now.clone();
-
-        tab_view.connect_close_page(move |view, page| {
-            let doc = docs
-                .borrow()
-                .iter()
-                .find(|doc| doc.matches_page(page))
-                .cloned();
-
-            let Some(doc) = doc else {
-                return glib::Propagation::Proceed;
-            };
-
-            // Чистая вкладка закрывается стандартным обработчиком TabView.
-            if !doc.is_modified.get() {
-                return glib::Propagation::Proceed;
-            }
-
-            let lang = Language::from_code(&settings.borrow().language);
-            let view_for_cancel = view.clone();
-            let page_for_cancel = page.clone();
-            let view_for_discard = view.clone();
-            let page_for_discard = page.clone();
-            let view_for_save = view.clone();
-            let page_for_save = page.clone();
-            let window_for_save = window.clone();
-            let doc_for_discard = doc.clone();
-            let doc_for_save = doc.clone();
-            let settings_for_discard = settings.clone();
-            let persist_for_discard = persist_session.clone();
-            let refresh_for_discard = refresh_active_ui.clone();
-            let persist_for_save = persist_session.clone();
-            let refresh_for_save = refresh_active_ui.clone();
-            let show_toast_for_save = show_toast_for_close_page.clone();
-            let settings_for_save = settings.clone();
-            let save_recovery_for_save = save_recovery_now.clone();
-
-            show_unsaved_changes_dialog(
-                &window,
-                lang.tab_close_heading(),
-                lang.tab_close_body(),
-                lang,
-                lang.btn_save(),
-                move || {
-                    view_for_cancel.close_page_finish(&page_for_cancel, false);
-                },
-                move || {
-                    doc_for_discard
-                        .export_state(&mut settings_for_discard.borrow_mut());
-                    view_for_discard.close_page_finish(&page_for_discard, true);
-                    persist_for_discard();
-                    refresh_for_discard();
-                },
-                move || {
-                    save_document(
-                        &window_for_save,
-                        &doc_for_save,
-                        false,
-                        Rc::new(move |result| match result {
-                            Ok(true) => {
-                                save_recovery_for_save();
-                                view_for_save.close_page_finish(&page_for_save, true);
-                                persist_for_save();
-                                refresh_for_save();
-                            }
-                            Ok(false) => {
-                                view_for_save.close_page_finish(&page_for_save, false);
-                            }
-                            Err(error) => {
-                                view_for_save.close_page_finish(&page_for_save, false);
-                                let lang = Language::from_code(&settings_for_save.borrow().language);
-                                show_toast_for_save(&format!(
-                                    "{}: {error}",
-                                    lang.error_save_file()
-                                ));
-                            }
-                        }),
-                    );
-                },
-            );
-
-            glib::Propagation::Stop
-        });
-    }
-
-    {
-        let window = window.clone();
-        let docs = docs.clone();
-        let settings = settings.clone();
-        let persist_session = persist_session.clone();
-        let refresh_active_ui = refresh_active_ui.clone();
-        let is_closing = is_closing.clone();
-        let closed_tabs = closed_tabs.clone();
-        let save_recovery_now = save_recovery_now.clone();
-
-        tab_view.connect_page_detached(move |_, page, _| {
-            // При закрытии окна вкладки отсоединяются автоматически; сессию
-            // уже сохранил обработчик close_request, поэтому не затираем ее.
-            if is_closing.get() {
-                return;
-            }
-
-            let removed = {
-                let mut list = docs.borrow_mut();
-                list.iter()
-                    .position(|doc| doc.matches_page(page))
-                    .map(|index| list.remove(index))
-            };
-
-            if let Some(doc) = removed {
-                if let Some(path) = doc.current_file.borrow().clone() {
-                    let mut stack = closed_tabs.borrow_mut();
-                    if stack.len() >= MAX_CLOSED_TABS {
-                        stack.remove(0);
-                    }
-                    stack.push(path);
-                }
-                doc.export_state(&mut settings.borrow_mut());
-            }
-
-            save_recovery_now();
-            persist_session();
-            refresh_active_ui();
-
-            // Закрытие последней вкладки закрывает окно (как в GNOME Text Editor).
-            if docs.borrow().is_empty() {
-                is_closing.set(true);
-                persist_session();
-                window.close();
-            }
-        });
-    }
-
-    // --- Сохранение геометрии окна ---
-    let save_window_geometry = {
-        let settings = settings.clone();
-        Rc::new(move |win: &adw::ApplicationWindow| {
-            session::save_window_geometry(&settings, win);
-        })
-    };
-
-    // --- Закрытие окна с проверкой всех вкладок ---
-    window.connect_close_request({
-        let docs = docs.clone();
-        let settings = settings.clone();
-        let persist_session = persist_session.clone();
-        let save_window_geometry = save_window_geometry.clone();
-        let is_force_closing = is_force_closing.clone();
-        let is_closing = is_closing.clone();
-        let show_toast = show_toast.clone();
-
-        move |win| {
-            if is_force_closing.get() {
-                return glib::Propagation::Proceed;
-            }
-
-            let modified: Vec<Rc<Document>> = docs
-                .borrow()
-                .iter()
-                .filter(|doc| doc.is_modified.get())
-                .cloned()
-                .collect();
-
-            if modified.is_empty() {
-                is_closing.set(true);
-                persist_session();
-                save_window_geometry(win);
-                recovery::clear();
-                return glib::Propagation::Proceed;
-            }
-
-            let lang = Language::from_code(&settings.borrow().language);
-
-            let win_for_discard = win.clone();
-            let win_for_save = win.clone();
-            let persist_discard = persist_session.clone();
-            let persist_save = persist_session.clone();
-            let geom_discard = save_window_geometry.clone();
-            let geom_save = save_window_geometry.clone();
-            let force_discard = is_force_closing.clone();
-            let force_save = is_force_closing.clone();
-            let closing_discard = is_closing.clone();
-            let closing_save = is_closing.clone();
-            let docs_for_save = modified.clone();
-            let settings_for_save = settings.clone();
-            let show_toast_for_save = show_toast.clone();
-
-            show_unsaved_changes_dialog(
-                win,
-                lang.unsaved_window_heading(),
-                lang.unsaved_window_body(),
-                lang,
-                lang.btn_save_all(),
-                || {
-                    // Отмена: окно остается открытым, ничего не меняем.
-                },
-                move || {
-                    closing_discard.set(true);
-                    persist_discard();
-                    geom_discard(&win_for_discard);
-                    recovery::clear();
-                    force_discard.set(true);
-                    win_for_discard.close();
-                },
-                move || {
-                    let win = win_for_save.clone();
-                    let settings_for_save = settings_for_save.clone();
-                    let show_toast_for_save = show_toast_for_save.clone();
-                    save_documents_sequentially(
-                        win_for_save.clone(),
-                        docs_for_save.clone(),
-                        0,
-                        Rc::new(move |result| match result {
-                            Ok(true) => {
-                                closing_save.set(true);
-                                persist_save();
-                                geom_save(&win);
-                                recovery::clear();
-                                force_save.set(true);
-                                win.close();
-                            }
-                            Ok(false) => {}
-                            Err(error) => {
-                                let lang = Language::from_code(&settings_for_save.borrow().language);
-                                show_toast_for_save(&format!(
-                                    "{}: {error}",
-                                    lang.error_save_file()
-                                ));
-                            }
-                        }),
-                    );
-                },
-            );
-
-            glib::Propagation::Stop
-        }
-    });
+    // --- Восстановление стартовых вкладок и сигналы вкладок/закрытия ---
+    restore_startup_tabs(&ctx, &add_document, initial_files, restore_session);
+    connect_tab_and_close_handlers(&ctx, &refresh_active_ui);
 
     // Первоначальная синхронизация заголовка и сохранение сессии.
     refresh_active_ui();
-    persist_session();
+    ctx.persist_session();
 
     // --- Горячие клавиши приложения ---
     app.set_accels_for_action("win.save", &["<Control>s"]);
@@ -1078,10 +547,7 @@ pub fn build_window(
     app.set_accels_for_action("win.toggle_meditation", &["<Control><Shift>h"]);
     app.set_accels_for_action("win.toggle_line_numbers", &["<Control><Shift>l"]);
     app.set_accels_for_action("win.toggle_soft_wrap", &["<Control><Shift>w"]);
-    app.set_accels_for_action(
-        "win.toggle_whitespace",
-        &["<Control><Shift>p"],
-    );
+    app.set_accels_for_action("win.toggle_whitespace", &["<Control><Shift>p"]);
     app.set_accels_for_action("win.close_tab", &["<Control>w"]);
     app.set_accels_for_action("win.next_tab", &["<Control>Tab"]);
     app.set_accels_for_action(
@@ -1099,51 +565,6 @@ pub fn build_window(
     app.set_accels_for_action("win.close", &["<Control>q", "<Control>F4"]);
 
     window
-}
-
-/// Собирает черновики всех безымянных документов.
-fn collect_recovery_drafts(docs: &Rc<RefCell<Vec<Rc<Document>>>>) -> Vec<RecoveryDraft> {
-    docs.borrow()
-        .iter()
-        .filter(|doc| doc.current_file.borrow().is_none())
-        .filter_map(|doc| {
-            let text = doc
-                .buffer
-                .text(&doc.buffer.start_iter(), &doc.buffer.end_iter(), false);
-            // Пустые безымянные вкладки не представляют ценности.
-            if text.is_empty() {
-                return None;
-            }
-
-            let insert_mark = doc.buffer.get_insert();
-            let iter = doc.buffer.iter_at_mark(&insert_mark);
-            Some(RecoveryDraft {
-                content: text.to_string(),
-                cursor_line: iter.line().max(0) as usize,
-                cursor_column: iter.line_offset().max(0) as usize,
-            })
-        })
-        .collect()
-}
-
-/// Планирует отложенную запись recovery.json.
-///
-/// `Weak` на список документов не создает цикл: буферный обработчик
-/// документа не удерживает окно и все вкладки.
-fn schedule_recovery_save(
-    docs: Weak<RefCell<Vec<Rc<Document>>>>,
-    scheduled: Rc<Cell<bool>>,
-) {
-    if scheduled.replace(true) {
-        return;
-    }
-
-    glib::timeout_add_seconds_local_once(1, move || {
-        scheduled.set(false);
-        if let Some(docs) = docs.upgrade() {
-            recovery::save(&collect_recovery_drafts(&docs));
-        }
-    });
 }
 
 #[cfg(test)]
@@ -1167,12 +588,10 @@ mod tests {
 
     #[test]
     fn test_tab_position_wraps_forward_and_backward() {
-        // Вперед: 0 -> 1 -> 2 -> 0.
         assert_eq!(wrapped_tab_position(0, 3, true), Some(1));
         assert_eq!(wrapped_tab_position(1, 3, true), Some(2));
         assert_eq!(wrapped_tab_position(2, 3, true), Some(0));
 
-        // Назад: 2 -> 1 -> 0 -> 2.
         assert_eq!(wrapped_tab_position(2, 3, false), Some(1));
         assert_eq!(wrapped_tab_position(1, 3, false), Some(0));
         assert_eq!(wrapped_tab_position(0, 3, false), Some(2));
@@ -1192,7 +611,6 @@ mod tests {
         let first = tab_page_at_position(&tab_view, 0).expect("first tab");
         let last = tab_page_at_position(&tab_view, 2).expect("last tab");
 
-        // С последней вкладки вперед переходим на первую.
         tab_view.set_selected_page(&last);
         select_tab_wrapped(&tab_view, true);
         assert_eq!(
@@ -1200,7 +618,6 @@ mod tests {
             0
         );
 
-        // С первой вкладки назад переходим на последнюю.
         tab_view.set_selected_page(&first);
         select_tab_wrapped(&tab_view, false);
         assert_eq!(
